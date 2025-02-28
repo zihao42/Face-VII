@@ -7,6 +7,75 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from loss import variance_aware_loss_from_batch
 
+def compute_mu_var(z, labels, eps=1e-6):
+    """
+    Compute the mean (mu) and diagonal variance (var) for each class based on the 
+    current batch features and true labels.
+    
+    Args:
+      z: Tensor of shape (B, M) representing the feature vectors of the current batch (e.g., M=768).
+      labels: Tensor of shape (B,) representing the true labels, with values in the range 0 to (K-1).
+      eps: A small constant for numerical stability to avoid division by zero.
+      
+    Returns:
+      mu_tensor: Tensor of shape (K', M), where K' is the number of classes present in the batch.
+                 Each row is the mean vector for that class.
+      var_tensor: Tensor of shape (K', M), where each row is the variance vector (per feature dimension)
+                  for that class (with eps added to ensure positivity).
+    """
+    unique_labels = torch.unique(labels)
+    mu_list = []
+    var_list = []
+    # Process classes in sorted order
+    for cl in sorted(unique_labels.tolist()):
+        cl_mask = (labels == cl)
+        z_cl = z[cl_mask]               # Features belonging to class 'cl', shape (N_cl, M)
+        mu_cl = z_cl.mean(dim=0)          # Mean vector, shape (M,)
+        var_cl = z_cl.var(dim=0, unbiased=False) + eps  # Variance vector, shape (M,)
+        mu_list.append(mu_cl)
+        var_list.append(var_cl)
+    mu_tensor = torch.stack(mu_list, dim=0)   # Shape (K', M)
+    var_tensor = torch.stack(var_list, dim=0)  # Shape (K', M)
+    return mu_tensor, var_tensor
+
+def compute_unknown_score(z, labels, eps=1e-6):
+    """
+    Compute the unknown score S for each sample based on the Mahalanobis distance 
+    from the sample to each class center, using the current batch features and labels.
+    The function dynamically calculates the class mean and variance, so no external 
+    mu or var parameters are needed.
+    
+    Args:
+      z: Tensor of shape (B, M) representing the feature vectors of the current batch (e.g., M=768).
+      labels: Tensor of shape (B,) representing the true labels, with values in the range 0 to (K-1).
+      eps: A small constant for numerical stability.
+      
+    Returns:
+      S: Tensor of shape (B,) representing the unknown score for each sample.
+         A higher score indicates that the sample is further away from all known class centers,
+         making it more likely to be considered "unknown".
+    """
+    # Compute class-wise mean and variance from the batch
+    mu, var = compute_mu_var(z, labels, eps)  # mu, var have shape (K', M)
+    
+    B, M = z.shape
+    K_prime, _ = mu.shape
+    
+    # Expand z to shape (B, 1, M) and mu to shape (1, K', M) for broadcasting
+    z_expanded = z.unsqueeze(1)       # Shape: (B, 1, M)
+    mu_expanded = mu.unsqueeze(0)       # Shape: (1, K', M)
+    
+    # Compute the difference between each sample and each class mean
+    diff = z_expanded - mu_expanded     # Shape: (B, K', M)
+    # Calculate the Mahalanobis distance under the diagonal covariance assumption (ignoring constant factors)
+    normalized_squared = diff ** 2 / (var.unsqueeze(0) + eps)  # Shape: (B, K', M)
+    # Sum over the feature dimension to get the distance for each sample with each class
+    d = normalized_squared.sum(dim=2)   # Shape: (B, K')
+    # For each sample, select the minimum distance over all classes as the unknown score S
+    S, _ = d.min(dim=1)                 # Shape: (B,)
+    
+    return S
+
 def train(
         num_epochs,
         eval_gap_epoch,
