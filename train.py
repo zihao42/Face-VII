@@ -5,7 +5,8 @@ import torch.nn as nn
 from transformers import SwinForImageClassification
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-from loss import variance_aware_loss_from_batch
+from loss import variance_aware_loss_from_batch, evidential_loss_from_batch
+from enn_head import EvidentialClassificationHead
 
 def compute_mu_var(z, labels, eps=1e-6):
     """
@@ -106,9 +107,20 @@ def train(
 
     model.swin.register_forward_hook(hook_fn)
 
-    # Define loss function and optimizer
+    # define optimizer
+    evi_head = None
+    # define EDL head in evi mode
+    if evi:
+        in_features = model.config.hidden_size
+        evi_head = EvidentialClassificationHead(in_features, num_labels)
+
+    if evi:
+        # have to take account of the parameters of the evidential head
+        optimizer = torch.optim.AdamW(list(model.parameters()) + list(evi_head.parameters()), lr=5e-5)
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using Device: " + str(device))
@@ -127,24 +139,33 @@ def train(
         total_ldist = 0
         total_lreg = 0
         total_ce_loss = 0
+        # I still currently included them in evi for consistency, will revise later
 
         correct = 0
         for images, labels in tqdm(dataloader_train, desc="Processing"):
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(images).logits
-            features = pooled_representation["features"]
+            features = ["features"]
             if var:
                 loss, ldist, lreg, ce_loss = variance_aware_loss_from_batch(features, outputs, labels)
                 # for variance-based
                 total_ldist += ldist.item()
                 total_lreg += lreg.item()
                 total_ce_loss += ce_loss.item()
+            elif evi:
+                # for evidential
+                evidence = evi_head(features)
+                loss, ldist, lreg, ce_loss = evidential_loss_from_batch(evidence, labels)
+                # again, just for consistency
+                total_ldist += ldist.item()
+                total_lreg += lreg.item()
+                total_ce_loss += ce_loss.item()
             else:
                 loss = criterion(outputs, labels)
+            
             loss.backward()
             optimizer.step()
-
             total_loss += loss.item()
 
             _, predicted = torch.max(outputs, 1)
@@ -158,7 +179,7 @@ def train(
 
         writer.add_scalar("Loss/total", total_loss / len(dataloader_train), epoch)
 
-        if var:
+        if var or evi:
             print(
                 f"Loss_ldist: {total_ldist / len(dataloader_train):.4f}, \n"
                 f"Loss_lreg: {total_lreg / len(dataloader_train):.4f}, \n"
@@ -171,6 +192,11 @@ def train(
         # Evaluate every 3 epochs
         if (epoch + 1) % eval_gap_epoch == 0:
             model.eval()
+
+            # for edl head if in evi mode
+            if evi_head:
+                evi_head.eval()
+            
             test_correct = 0
             test_loss = 0
             test_total = 0
@@ -192,11 +218,29 @@ def train(
                         test_ldist += losses[1].item()
                         test_lreg += losses[2].item()
                         test_ce_loss += losses[3].item()
+                    elif evi:
+                        evidence = evi_head(features)
+                        losses_evi = evidential_loss_from_batch(evidence, labels)
+                        test_loss += losses_evi[0].item()
+                        # for consistency, will revise later
+                        test_ldist += losses_evi[1].item()
+                        test_lreg += losses_evi[2].item()
+                        test_ce_loss += losses_evi[3].item()
                     else:
                         test_loss += criterion(outputs, labels)
-                    _, predicted = torch.max(outputs, 1)
+
+                    # for evi use edl head instead of Swin built-in logits
+                    if evi:
+                        evidence = evi_head(features)
+                        alpha = evidence + 1
+                        probs = alpha / alpha.sum(dim=1, keepdim=True)
+                        predicted = probs.argmax(dim=1)
+                    else:
+                        _, predicted = torch.max(outputs, 1)
+
                     test_correct += (predicted == labels).sum().item()
                     test_total += labels.size(0)
+
             test_accuracy = 100 * test_correct / test_total
             print(
                 f"Evaluation after Epoch {epoch + 1}: \n"
@@ -205,7 +249,7 @@ def train(
 
             writer.add_scalar("Loss/total_eval", test_loss / len(dataloader_eval), epoch)
 
-            if var:
+            if var or evi:
                 print(
                     f"Loss_ldist: {test_ldist / len(dataloader_eval):.4f}, \n"
                     f"Loss_lreg: {test_lreg / len(dataloader_eval):.4f}, \n"

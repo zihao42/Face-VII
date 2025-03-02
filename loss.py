@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def variance_aware_loss_from_batch(z, logits, labels, lambda_reg=0.05, lambda_cls=1.0):
@@ -107,3 +108,50 @@ def scheduled_variance_aware_loss(z, logits, labels, current_epoch, total_epochs
     loss = lambda_cls * ce_loss + alpha * (Ldist + lambda_reg * Lreg)
     
     return loss, Ldist, Lreg, ce_loss, alpha
+
+
+# define function for EDL loss
+def evidential_loss_from_batch(evidence, labels):
+    """
+    Negative Log-Likelihood (NLL) style EDL loss:
+      sum_{k=1 to K}[ y_k * ( log( sum_j alpha_j ) - log(alpha_k) ) ]
+    Returns:
+      (total_loss, ldist, lreg, ce_loss)
+      We return partial losses so that your training loop 
+      can log them similarly to the variance-based approach.
+    """
+    alpha = evidence + 1.0  # alpha_k = e_k + 1
+    alpha0 = alpha.sum(dim=1, keepdim=True)  # sum of all alpha_k for each sample
+
+    K = alpha.shape[1]
+    # Convert integer labels -> one-hot
+    y_onehot = F.one_hot(labels, num_classes=K).float()
+
+    # EDL NLL: \sum_k [ y_k * ( log(\sum_j alpha_j) - log(alpha_k) ) ]
+    log_sum_alpha = torch.log(alpha0)
+    log_alpha = torch.log(alpha)
+
+    per_sample_loss = torch.sum(y_onehot * (log_sum_alpha - log_alpha), dim=1)
+    edl_nll = per_sample_loss.mean()
+
+    # this is only included as a placeholder for the consistency of the loop
+    # 事实上他们是没有用的，我会在之后的版本里改掉他们
+    # We can treat edl_nll as the total loss, plus partial terms as placeholders
+    Ldist = edl_nll
+    Lreg = torch.tensor(0.0, device=evidence.device)
+    ce_loss = torch.tensor(0.0, device=evidence.device)
+    return edl_nll, Ldist, Lreg, ce_loss
+
+# for evidential uncertainty from Dirichlet
+def compute_evidential_unknown_score(evidence):
+    """
+    Optional helper if you want an 'unknown score' akin to 'compute_unknown_score' 
+    in the variance-based approach. 
+    Score = predictive uncertainty = K / sum(alpha_k).
+    """
+    alpha = evidence + 1.0
+    alpha0 = alpha.sum(dim=1)   # shape (B,)
+    K = alpha.shape[1]
+    # The higher this is, the more uncertain => more likely unknown
+    unknown_score = K / alpha0  # shape (B,)
+    return unknown_score
