@@ -10,8 +10,10 @@ class EvidentialClassificationHead(nn.Module):
         super().__init__()
         self.use_bn = use_bn
         if use_bn:
-            self.bn = nn.BatchNorm1d(in_features)
-        self.linear = nn.Linear(in_features, num_classes)
+            self.bn = nn.BatchNorm1d(num_classes)
+            self.linear = nn.Linear(in_features, num_classes, bias=False)
+        else:
+            self.linear = nn.Linear(in_features, num_classes)
 
     def forward(self, x):
         """
@@ -20,8 +22,8 @@ class EvidentialClassificationHead(nn.Module):
         Returns:
           evidence: (B, num_classes) - nonnegative evidence for each class
         """
-        if self.use_bn:
-            x = self.bn(x)
         logits = self.linear(x)
+        if self.use_bn:
+            logits = self.bn(logits)
         evidence = F.softplus(logits)
         return evidence
