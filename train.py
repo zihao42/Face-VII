@@ -125,6 +125,7 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using Device: " + str(device))
     model.to(device)
+    evi_head.to(device)
 
     # Training loop
     writer = SummaryWriter()
@@ -146,7 +147,7 @@ def train(
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(images).logits
-            features = ["features"]
+            features = pooled_representation["features"]
             if var:
                 loss, ldist, lreg, ce_loss = variance_aware_loss_from_batch(features, outputs, labels)
                 # for variance-based
