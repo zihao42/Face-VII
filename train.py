@@ -86,7 +86,8 @@ def train(
         save_weights_gap_epoch,
         save_weight_dir,
         var=False,
-        evi=False):    
+        evi=False,
+        use_bn=False):    
     if var:
         print("Variance-based version training starts!")
 
@@ -112,7 +113,7 @@ def train(
     # define EDL head in evi mode
     if evi:
         in_features = model.config.hidden_size
-        evi_head = EvidentialClassificationHead(in_features, num_labels)
+        evi_head = EvidentialClassificationHead(in_features, num_labels, use_bn)
 
     if evi:
         # have to take account of the parameters of the evidential head
