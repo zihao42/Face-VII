@@ -22,27 +22,29 @@ def load_image(image_path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Predict image class using open-set emotion recognition model"
+        description="Predict image class with unknown detection using open-set emotion recognition model"
     )
     parser.add_argument("--weights", type=str, required=True,
                         help="Path to the model weights (.pth file)")
     parser.add_argument("--image", type=str, required=True,
                         help="Path to the input image file")
+    parser.add_argument("--threshold", type=float, default=0.7,
+                        help="Softmax probability threshold for unknown detection (default: 0.65)")
     args = parser.parse_args()
 
     # Automatically select CUDA if available, else use CPU.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Use the same model configuration as in your training code.
+    # Create the model with 6 labels (matching your training configuration).
     model_name = "microsoft/swin-tiny-patch4-window7-224"
-    num_labels = 7
+    num_labels = 6
     model = SwinForImageClassification.from_pretrained(
         model_name,
         ignore_mismatched_sizes=True,
         num_labels=num_labels
     )
     
-    # Load the saved weights.
+    # Load the saved weights (assumed to be for 6 labels).
     state_dict = torch.load(args.weights, map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
@@ -54,12 +56,33 @@ def main():
     # Run inference.
     with torch.no_grad():
         outputs = model(img_tensor)
-        logits = outputs.logits  # shape: (1, 7)
+        logits = outputs.logits  # shape: (1, 6)
+        probs = torch.softmax(logits, dim=1)
+        max_prob, pred_idx = torch.max(probs, dim=1)
+    
+    # Check threshold to decide if sample is known or unknown.
+    if max_prob.item() < args.threshold:
+        print("Predicted class: Unknown")
+    else:
+        annot = ""
+        # Convert zero-indexed prediction to label (1-6)
+        predicted_class = pred_idx.item() + 1
+        if predicted_class == 1:
+            annot= "Surprised"
+        elif predicted_class == 2:
+            annot = "Fear"
+        elif predicted_class == 3:
+            annot = "Disgust"
+        elif predicted_class == 4:
+            annot = "Happiness"
+        elif predicted_class == 5:
+            annot = "Sadness"
+        elif predicted_class == 6:
+            annot = "Anger"
+        elif predicted_class == 7:
+            annot = "Neutral"
 
-    # Get the predicted index and convert to label in range 1-7.
-    pred_idx = torch.argmax(logits, dim=1).item()
-    predicted_class = pred_idx + 1
-    print(f"Predicted class: {predicted_class}")
+        print(f"Predicted class: {predicted_class} {annot} (confidence: {max_prob.item():.3f})")
 
 if __name__ == "__main__":
     main()
