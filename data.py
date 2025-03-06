@@ -28,7 +28,24 @@ class RAFDBDataset(Dataset):
 
 
 # Load dataset paths and labels (Modify with actual dataset location)
-def load_rafdb_dataset(img_dir, label_file_path):
+def load_rafdb_dataset(img_dir, label_file_path, uk_mode, uk):
+    if uk == "sur":
+        uk_conv = "1"
+    elif uk == "fea":
+        uk_conv = "2"
+    elif uk == "dis":
+        uk_conv = "3"
+    elif uk == "hap":
+        uk_conv = "4"
+    elif uk == "sad":
+        uk_conv = "5"
+    elif uk == "ang":
+        uk_conv = "6"
+    elif uk == "neu":
+        uk_conv = "7"
+    else:
+        uk_conv = None
+
     train_image_paths = []
     train_labels = []
     test_image_paths = []
@@ -39,22 +56,33 @@ def load_rafdb_dataset(img_dir, label_file_path):
             name, suffix = img_name.split('.')
             img_name = name + '_aligned.' + suffix
             if "train" in img_name:
-                train_image_paths.append(os.path.join(img_dir, img_name))
-                train_labels.append(int(label) - 1)  # Convert to zero-based index
-            else:
+                if label == uk_conv:
+                    continue
+                else:
+                    train_image_paths.append(os.path.join(img_dir, img_name))
+                    #train_labels.append(int(label) - 1)  # Convert to zero-based index
+                    train_labels.append(int(label))
+            elif "test" in img_name:
                 test_image_paths.append(os.path.join(img_dir, img_name))
-                test_labels.append(int(label) - 1)  # Convert to zero-based index
+                if label == uk_conv:
+                    #test_labels.append(int(label) - 1)  # Convert to zero-based index
+                    test_labels.append(8)
+                else:
+                    test_labels.append(int(label))
+
+            
     return train_image_paths, train_labels, test_image_paths, test_labels
 
 
-def get_dataloaders(img_dir, label_file_path):
-    train_image_paths, train_labels, test_image_paths, test_labels = load_rafdb_dataset(img_dir, label_file_path)
+def get_dataloaders(img_dir, label_file_path, uk_mode, uk):
+    train_image_paths, train_labels, test_image_paths, test_labels = load_rafdb_dataset(img_dir, label_file_path, uk_mode, uk)
     combined = list(zip(train_image_paths, train_labels))
     random.shuffle(combined)
     train_image_paths, train_labels = zip(*combined)
     eval_size = int(len(train_labels) * 0.2)
     eval_image_paths, eval_labels = train_image_paths[:eval_size], train_labels[:eval_size]
     train_image_paths, train_labels = train_image_paths[eval_size:], train_labels[eval_size:]
+    
 
     print("Number of train samples: " + str(len(train_image_paths)))
     print("Number of train labels: " + str(len(train_labels)))
