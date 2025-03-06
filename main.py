@@ -32,9 +32,6 @@ if __name__ == "__main__":
 
     weights_dir = "/media/data1/ningtong/wzh/projects/Face-VII/weights"
     
-
-
-    
     # 选择你需要的训练模式，取消对应调用的注释即可：
 
     # 1. Baseline（标准交叉熵，不使用 Variance 和 Schedule）
@@ -48,7 +45,6 @@ if __name__ == "__main__":
     #       use_variance=True, use_schedule=False)
 
     # 3. 同时使用 Variance 和 Schedule
-    train(num_epochs=15, eval_gap_epoch=1, num_labels=7, dataloader_train=dataloader_train,
-          dataloader_eval=dataloader_eval, save_weights_gap_epoch=5, save_weight_dir=weights_dir,
-          use_variance=True, use_schedule=True)
+    train(num_epochs=15, eval_gap_epoch=1, num_labels=6, uk=uk, dataloader_train=dataloader_train,
+          dataloader_eval=dataloader_eval, save_weights_gap_epoch=1, save_weight_dir=weights_dir, use_variance=True, use_schedule=True)
 

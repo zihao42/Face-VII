@@ -8,20 +8,53 @@ from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 from loss import variance_aware_loss_from_batch, scheduled_variance_aware_loss
 
-def compute_mu_var(z, labels, eps=1e-6):
+##############################
+# 标签映射相关函数
+##############################
+def generate_label_map(uk):
     """
-    Compute the mean (mu) and diagonal variance (var) for each class based on the 
-    current batch features and true labels.
+    根据传入的要舍弃的标签（chosen_label），生成映射字典。
+    数据集原始标签范围为 0～6（共7个类别），
+    舍弃 chosen_label 后，其余 6 个标签映射为连续索引 0～5。
     
-    Args:
-      z: Tensor of shape (B, M) representing the feature vectors of the current batch.
-      labels: Tensor of shape (B,) representing the true labels.
-      eps: A small constant for numerical stability.
-      
-    Returns:
-      mu_tensor: Tensor of shape (K', M) with the mean vector for each class present in the batch.
-      var_tensor: Tensor of shape (K', M) with the variance vector for each class.
+    参数：
+      chosen_label：要舍弃的标签（字符串或整数），例如 "3" 或 3
+    返回：
+      label_map：字典，例如若 chosen_label 为 3，则返回 {0:0, 1:1, 2:2, 4:3, 5:4, 6:5}
     """
+    if uk == "sur":
+        chosen_label = 0
+    elif uk == "fea":
+        chosen_label = 1
+    elif uk == "dis":
+        chosen_label = 2
+    elif uk == "hap":
+        chosen_label = 3
+    elif uk == "sad":
+        chosen_label = 4
+    elif uk == "ang":
+        chosen_label = 5
+    elif uk == "neu":
+        chosen_label = 6
+    else:
+        chosen_label = None
+    
+    valid_labels = [i for i in range(7) if i != chosen_label]
+    label_map = {orig: new for new, orig in enumerate(sorted(valid_labels))}
+    return label_map
+
+def map_labels(labels, mapping):
+    """
+    根据 mapping 字典，将标签 tensor 中的每个值转换为连续的标签（类型为 torch.long）。
+    """
+    mapped = torch.tensor([mapping[int(x)] for x in labels.cpu().tolist()],
+                            dtype=torch.long, device=labels.device)
+    return mapped
+
+##############################
+# 辅助函数：计算均值与方差、未知评分
+##############################
+def compute_mu_var(z, labels, eps=1e-6):
     unique_labels = torch.unique(labels)
     mu_list = []
     var_list = []
@@ -37,30 +70,23 @@ def compute_mu_var(z, labels, eps=1e-6):
     return mu_tensor, var_tensor
 
 def compute_unknown_score(z, labels, eps=1e-6):
-    """
-    Compute the unknown score S for each sample based on the Mahalanobis distance.
-    
-    Args:
-      z: Tensor of shape (B, M) representing the feature vectors.
-      labels: Tensor of shape (B,) representing the true labels.
-      eps: A small constant for numerical stability.
-      
-    Returns:
-      S: Tensor of shape (B,) representing the unknown score for each sample.
-    """
     mu, var = compute_mu_var(z, labels, eps)
     B, M = z.shape
-    z_expanded = z.unsqueeze(1)  # Shape: (B, 1, M)
-    mu_expanded = mu.unsqueeze(0)  # Shape: (1, K', M)
+    z_expanded = z.unsqueeze(1)      # Shape: (B, 1, M)
+    mu_expanded = mu.unsqueeze(0)      # Shape: (1, K', M)
     diff = z_expanded - mu_expanded
     normalized_squared = diff ** 2 / (var.unsqueeze(0) + eps)
-    d = normalized_squared.sum(dim=2)  # Mahalanobis distance for each sample with each class
+    d = normalized_squared.sum(dim=2)  # 每个样本与各类别的 Mahalanobis 距离
     S, _ = d.min(dim=1)
     return S
 
+##############################
+# 训练函数
+##############################
 def train(num_epochs,
           eval_gap_epoch,
           num_labels,
+          uk,
           dataloader_train,
           dataloader_eval,
           save_weights_gap_epoch,
@@ -69,14 +95,28 @@ def train(num_epochs,
           use_schedule=False,
           evi=False):
     """
-    Train the model with different loss functions based on the specified mode.
+    训练模型。
     
-    Modes:
-      - Baseline: use_variance=False, standard cross-entropy loss.
-      - Only Variance: use_variance=True, use_schedule=False, use variance_aware_loss_from_batch.
-      - Variance with Schedule: use_variance=True, use_schedule=True, use scheduled_variance_aware_loss.
-      - Evidential: evi=True.
+    参数：
+      num_epochs：训练总轮数
+      eval_gap_epoch：每隔多少个 epoch 进行一次评估
+      num_labels：映射后类别数量，应为 6
+      chosen_label：要舍弃的标签（原始数据中 0～6 中的一个），例如 "3" 或 3
+      dataloader_train：训练数据加载器，返回的标签为原始标签（例如 0,1,2,4,5,6）
+      dataloader_eval：验证数据加载器，同上
+      save_weights_gap_epoch：每隔多少个 epoch 保存一次模型权重
+      save_weight_dir：保存权重的目录
+      use_variance, use_schedule, evi：不同模式的训练开关
+      
+    说明：
+      数据加载器返回的原始标签保持不变（例如 0,1,2,4,5,6），
+      本函数内部会生成一个映射字典，将这些标签转换为连续的 0～5，
+      以满足 nn.CrossEntropyLoss 的要求，并确保模型输出与标签匹配。
     """
+    # 生成标签映射字典，例如若 chosen_label 为 3，则映射为 {0:0, 1:1, 2:2, 4:3, 5:4, 6:5}
+    label_map = generate_label_map(uk)
+    print("生成的标签映射：", label_map)
+
     if use_variance:
         if use_schedule:
             print("Training with Variance and Schedule!")
@@ -90,24 +130,25 @@ def train(num_epochs,
     date_time_str = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
     pooled_representation = {}
 
-    # Hook function to capture the input to the classification layer.
+    # 注册 hook，用于捕获进入分类器前的特征
     def hook_fn(module, input, output):
-        pooled_representation["features"] = output.pooler_output  # Extract features before the FC layer
+        pooled_representation["features"] = output.pooler_output
 
-    # Load the pre-trained Swin-Tiny model.
     model_name = "microsoft/swin-tiny-patch4-window7-224"
-    model = SwinForImageClassification.from_pretrained(model_name, ignore_mismatched_sizes=True,
-                                                         num_labels=num_labels)
+    # 这里使用 num_labels（映射后数量，应该为6）
+    model = SwinForImageClassification.from_pretrained(
+        model_name,
+        ignore_mismatched_sizes=True,
+        num_labels=num_labels
+    )
     model.swin.register_forward_hook(hook_fn)
 
-    # Define the optimizer.
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using Device: " + str(device))
+    print("Using Device:", device)
     model.to(device)
     writer = SummaryWriter()
 
-    # Lists to record training and validation metrics.
     train_loss_list = []
     train_acc_list = []
     val_loss_list = []
@@ -124,55 +165,52 @@ def train(num_epochs,
 
         for images, labels in tqdm(dataloader_train, desc="Processing"):
             images, labels = images.to(device), labels.to(device)
+            # 将原始标签转换为连续标签（例如原始标签 [0,1,2,4,5,6] 映射为 [0,1,2,3,4,5]）
+            mapped_labels = map_labels(labels, label_map)
+            # 断言映射后的标签在合法范围内
+            assert torch.all((mapped_labels >= 0) & (mapped_labels < num_labels)), f"发现超出范围的标签：{mapped_labels}"
+            
             optimizer.zero_grad()
             outputs = model(images).logits
             features = pooled_representation["features"]
 
             if use_variance:
                 if use_schedule:
-                    # 使用 scheduled_variance_aware_loss
                     loss, ldist, lreg, ce_loss, _ = scheduled_variance_aware_loss(
-                        features, outputs, labels, current_epoch=epoch, total_epochs=num_epochs,
+                        features, outputs, mapped_labels, current_epoch=epoch, total_epochs=num_epochs,
                         lambda_reg=0.05, lambda_cls=1.0
                     )
                 else:
-                    # 使用 variance_aware_loss_from_batch（无 schedule）
                     loss, ldist, lreg, ce_loss = variance_aware_loss_from_batch(
-                        features, outputs, labels, lambda_reg=0.05, lambda_cls=1.0
+                        features, outputs, mapped_labels, lambda_reg=0.05, lambda_cls=1.0
                     )
                 total_ldist += ldist.item()
                 total_lreg += lreg.item()
                 total_ce_loss += ce_loss.item()
             else:
-                # Baseline：仅使用交叉熵损失
-                loss = nn.CrossEntropyLoss()(outputs, labels)
+                loss = nn.CrossEntropyLoss()(outputs, mapped_labels)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
             _, predicted = torch.max(outputs, 1)
-            correct += (predicted == labels).sum().item()
-            total += labels.size(0)
+            correct += (predicted == mapped_labels).sum().item()
+            total += mapped_labels.size(0)
         epoch_train_loss = total_loss / len(dataloader_train)
         epoch_train_acc = 100 * correct / total
         train_loss_list.append(epoch_train_loss)
         train_acc_list.append(epoch_train_acc)
 
-        print(f"Epoch [{epoch + 1}/{num_epochs}]:")
-        print(f"  Train Loss: {epoch_train_loss:.4f}")
-        print(f"  Train Accuracy: {epoch_train_acc:.2f}%")
+        print(f"\nEpoch [{epoch + 1}/{num_epochs}]: Train Loss: {epoch_train_loss:.4f}, Accuracy: {epoch_train_acc:.2f}%")
         writer.add_scalar("Loss/total", epoch_train_loss, epoch)
 
         if use_variance:
-            print(
-                f"  Loss_ldist: {total_ldist / len(dataloader_train):.4f}, "
-                f"Loss_lreg: {total_lreg / len(dataloader_train):.4f}, "
-                f"Loss_ce_loss: {total_ce_loss / len(dataloader_train):.4f}"
-            )
+            print(f"Loss_ldist: {total_ldist / len(dataloader_train):.4f}, "
+                  f"Loss_lreg: {total_lreg / len(dataloader_train):.4f}, "
+                  f"Loss_ce_loss: {total_ce_loss / len(dataloader_train):.4f}")
             writer.add_scalar("Loss/ldist", total_ldist / len(dataloader_train), epoch)
             writer.add_scalar("Loss/lreg", total_lreg / len(dataloader_train), epoch)
             writer.add_scalar("Loss/ce_loss", total_ce_loss / len(dataloader_train), epoch)
 
-        # Evaluation 每隔 eval_gap_epoch 个 epoch
         if (epoch + 1) % eval_gap_epoch == 0:
             model.eval()
             test_correct = 0
@@ -184,12 +222,15 @@ def train(num_epochs,
             with torch.no_grad():
                 for images, labels in dataloader_eval:
                     images, labels = images.to(device), labels.to(device)
+                    mapped_labels = map_labels(labels, label_map)
+                    assert torch.all((mapped_labels >= 0) & (mapped_labels < num_labels)), f"Eval中发现超出范围的标签：{mapped_labels}"
+                    
                     outputs = model(images).logits
                     features = pooled_representation["features"]
                     if use_variance:
                         if use_schedule:
                             losses = scheduled_variance_aware_loss(
-                                features, outputs, labels, current_epoch=epoch, total_epochs=num_epochs,
+                                features, outputs, mapped_labels, current_epoch=epoch, total_epochs=num_epochs,
                                 lambda_reg=0.05, lambda_cls=1.0
                             )
                             test_loss += losses[0].item()
@@ -198,36 +239,31 @@ def train(num_epochs,
                             test_ce_loss += losses[3].item()
                         else:
                             losses = variance_aware_loss_from_batch(
-                                features, outputs, labels, lambda_reg=0.05, lambda_cls=1.0
+                                features, outputs, mapped_labels, lambda_reg=0.05, lambda_cls=1.0
                             )
                             test_loss += losses[0].item()
                             test_ldist += losses[1].item()
                             test_lreg += losses[2].item()
                             test_ce_loss += losses[3].item()
                     else:
-                        test_loss += nn.CrossEntropyLoss()(outputs, labels).item()
+                        test_loss += nn.CrossEntropyLoss()(outputs, mapped_labels).item()
                     _, predicted = torch.max(outputs, 1)
-                    test_correct += (predicted == labels).sum().item()
-                    test_total += labels.size(0)
+                    test_correct += (predicted == mapped_labels).sum().item()
+                    test_total += mapped_labels.size(0)
             epoch_val_loss = test_loss / len(dataloader_eval)
             epoch_val_acc = 100 * test_correct / test_total
             val_loss_list.append(epoch_val_loss)
             val_acc_list.append(epoch_val_acc)
-            print(f"Evaluation after Epoch {epoch + 1}:")
-            print(f"  Eval Loss: {epoch_val_loss:.4f}")
-            print(f"  Eval Accuracy: {epoch_val_acc:.2f}%")
+            print(f"\nEvaluation after Epoch {epoch + 1}: Eval Loss: {epoch_val_loss:.4f}, Accuracy: {epoch_val_acc:.2f}%")
             writer.add_scalar("Loss/total_eval", epoch_val_loss, epoch)
             if use_variance:
-                print(
-                    f"  Loss_ldist: {test_ldist / len(dataloader_eval):.4f}, "
-                    f"Loss_lreg: {test_lreg / len(dataloader_eval):.4f}, "
-                    f"Loss_ce_loss: {test_ce_loss / len(dataloader_eval):.4f}"
-                )
+                print(f"Loss_ldist: {test_ldist / len(dataloader_eval):.4f}, "
+                      f"Loss_lreg: {test_lreg / len(dataloader_eval):.4f}, "
+                      f"Loss_ce_loss: {test_ce_loss / len(dataloader_eval):.4f}\n")
                 writer.add_scalar("Loss/ldist_eval", test_ldist / len(dataloader_eval), epoch)
                 writer.add_scalar("Loss/lreg_eval", test_lreg / len(dataloader_eval), epoch)
                 writer.add_scalar("Loss/ce_loss_eval", test_ce_loss / len(dataloader_eval), epoch)
 
-        # 定期保存模型权重
         if (epoch + 1) % save_weights_gap_epoch == 0 and epoch + 1 < num_epochs:
             option = ""
             if use_variance:
@@ -240,7 +276,6 @@ def train(num_epochs,
             torch.save(model.state_dict(),
                        os.path.join(save_weight_dir,
                                     "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
-    # 保存最终模型权重
     option = ""
     if use_variance:
         if use_schedule:
@@ -252,12 +287,10 @@ def train(num_epochs,
     torch.save(model.state_dict(),
                os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
     
-    # 生成并保存训练和验证指标图
     plot_dir = "/media/data1/ningtong/wzh/projects/Face-VII/plot"
     if not os.path.exists(plot_dir):
         os.makedirs(plot_dir)
     
-    # 绘制训练和验证 Loss 曲线
     plt.figure()
     epochs_range = range(1, num_epochs + 1)
     plt.plot(epochs_range, train_loss_list, label="Train Loss")
@@ -269,7 +302,6 @@ def train(num_epochs,
     plt.savefig(os.path.join(plot_dir, "loss_plot.png"))
     plt.close()
     
-    # 绘制训练和验证 Accuracy 曲线
     plt.figure()
     plt.plot(epochs_range, train_acc_list, label="Train Accuracy")
     plt.plot(epochs_range, val_acc_list, label="Validation Accuracy")
