@@ -41,7 +41,7 @@ def variance_aware_loss_from_batch(z, logits, labels, lambda_reg=0.05, lambda_cl
     ce_loss = nn.CrossEntropyLoss()(logits, labels)
 
     # 联合总损失(Ldist是马氏距离损失，Lreg是方差损失，ce_loss是分类损失（交叉熵））
-    loss = Ldist + lambda_reg * Lreg + lambda_cls * ce_loss
+    loss = Ldist + lambda_reg * Lreg + lambda_cls * ce_loss 
     return loss, Ldist, Lreg, ce_loss
 
 def scheduled_variance_aware_loss(z, logits, labels, current_epoch, total_epochs, lambda_reg=0.05, lambda_cls=1.0):

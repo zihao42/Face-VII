@@ -81,8 +81,8 @@ def get_dataloaders(img_dir, label_file_path):
     train_dataset = RAFDBDataset(train_image_paths, train_labels, transform=transform)
     eval_dataset = RAFDBDataset(eval_image_paths, eval_labels, transform=transform_eval)
     test_dataset = RAFDBDataset(test_image_paths, test_labels, transform=transform_eval)
-    dataloader_train = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    dataloader_eval = DataLoader(eval_dataset, batch_size=32, shuffle=False)
-    dataloader_test = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    dataloader_train = DataLoader(train_dataset, batch_size=256, shuffle=True)
+    dataloader_eval = DataLoader(eval_dataset, batch_size=256, shuffle=False)
+    dataloader_test = DataLoader(test_dataset, batch_size=256, shuffle=False)
 
     return dataloader_train, dataloader_eval, dataloader_test
