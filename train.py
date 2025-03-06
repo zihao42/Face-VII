@@ -65,13 +65,28 @@ def train(num_epochs,
           dataloader_eval,
           save_weights_gap_epoch,
           save_weight_dir,
-          var=False,
+          use_variance=False,
+          use_schedule=False,
           evi=False):
-    if var:
-        print("Variance-based version training starts!")
-    if evi:
+    """
+    Train the model with different loss functions based on the specified mode.
+    
+    Modes:
+      - Baseline: use_variance=False, standard cross-entropy loss.
+      - Only Variance: use_variance=True, use_schedule=False, use variance_aware_loss_from_batch.
+      - Variance with Schedule: use_variance=True, use_schedule=True, use scheduled_variance_aware_loss.
+      - Evidential: evi=True.
+    """
+    if use_variance:
+        if use_schedule:
+            print("Training with Variance and Schedule!")
+        else:
+            print("Training with Variance (without Schedule)!")
+    elif evi:
         print("Evidential version training starts!")
-        
+    else:
+        print("Baseline training starts (standard cross-entropy loss)!")
+
     date_time_str = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
     pooled_representation = {}
 
@@ -113,17 +128,23 @@ def train(num_epochs,
             outputs = model(images).logits
             features = pooled_representation["features"]
 
-            if var:
-                # Use the scheduled variance-aware loss.
-                loss, ldist, lreg, ce_loss, _ = scheduled_variance_aware_loss(
-                    features, outputs, labels, current_epoch=epoch, total_epochs=num_epochs,
-                    lambda_reg=0.05, lambda_cls=1.0
-                )
+            if use_variance:
+                if use_schedule:
+                    # 使用 scheduled_variance_aware_loss
+                    loss, ldist, lreg, ce_loss, _ = scheduled_variance_aware_loss(
+                        features, outputs, labels, current_epoch=epoch, total_epochs=num_epochs,
+                        lambda_reg=0.05, lambda_cls=1.0
+                    )
+                else:
+                    # 使用 variance_aware_loss_from_batch（无 schedule）
+                    loss, ldist, lreg, ce_loss = variance_aware_loss_from_batch(
+                        features, outputs, labels, lambda_reg=0.05, lambda_cls=1.0
+                    )
                 total_ldist += ldist.item()
                 total_lreg += lreg.item()
                 total_ce_loss += ce_loss.item()
             else:
-                # Use the standard classification loss.
+                # Baseline：仅使用交叉熵损失
                 loss = nn.CrossEntropyLoss()(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -141,7 +162,7 @@ def train(num_epochs,
         print(f"  Train Accuracy: {epoch_train_acc:.2f}%")
         writer.add_scalar("Loss/total", epoch_train_loss, epoch)
 
-        if var:
+        if use_variance:
             print(
                 f"  Loss_ldist: {total_ldist / len(dataloader_train):.4f}, "
                 f"Loss_lreg: {total_lreg / len(dataloader_train):.4f}, "
@@ -151,7 +172,7 @@ def train(num_epochs,
             writer.add_scalar("Loss/lreg", total_lreg / len(dataloader_train), epoch)
             writer.add_scalar("Loss/ce_loss", total_ce_loss / len(dataloader_train), epoch)
 
-        # Evaluation every eval_gap_epoch epochs.
+        # Evaluation 每隔 eval_gap_epoch 个 epoch
         if (epoch + 1) % eval_gap_epoch == 0:
             model.eval()
             test_correct = 0
@@ -165,15 +186,24 @@ def train(num_epochs,
                     images, labels = images.to(device), labels.to(device)
                     outputs = model(images).logits
                     features = pooled_representation["features"]
-                    if var:
-                        losses = scheduled_variance_aware_loss(
-                            features, outputs, labels, current_epoch=epoch, total_epochs=num_epochs,
-                            lambda_reg=0.05, lambda_cls=1.0
-                        )
-                        test_loss += losses[0].item()
-                        test_ldist += losses[1].item()
-                        test_lreg += losses[2].item()
-                        test_ce_loss += losses[3].item()
+                    if use_variance:
+                        if use_schedule:
+                            losses = scheduled_variance_aware_loss(
+                                features, outputs, labels, current_epoch=epoch, total_epochs=num_epochs,
+                                lambda_reg=0.05, lambda_cls=1.0
+                            )
+                            test_loss += losses[0].item()
+                            test_ldist += losses[1].item()
+                            test_lreg += losses[2].item()
+                            test_ce_loss += losses[3].item()
+                        else:
+                            losses = variance_aware_loss_from_batch(
+                                features, outputs, labels, lambda_reg=0.05, lambda_cls=1.0
+                            )
+                            test_loss += losses[0].item()
+                            test_ldist += losses[1].item()
+                            test_lreg += losses[2].item()
+                            test_ce_loss += losses[3].item()
                     else:
                         test_loss += nn.CrossEntropyLoss()(outputs, labels).item()
                     _, predicted = torch.max(outputs, 1)
@@ -187,7 +217,7 @@ def train(num_epochs,
             print(f"  Eval Loss: {epoch_val_loss:.4f}")
             print(f"  Eval Accuracy: {epoch_val_acc:.2f}%")
             writer.add_scalar("Loss/total_eval", epoch_val_loss, epoch)
-            if var:
+            if use_variance:
                 print(
                     f"  Loss_ldist: {test_ldist / len(dataloader_eval):.4f}, "
                     f"Loss_lreg: {test_lreg / len(dataloader_eval):.4f}, "
@@ -197,31 +227,37 @@ def train(num_epochs,
                 writer.add_scalar("Loss/lreg_eval", test_lreg / len(dataloader_eval), epoch)
                 writer.add_scalar("Loss/ce_loss_eval", test_ce_loss / len(dataloader_eval), epoch)
 
-        # Save model weights periodically.
+        # 定期保存模型权重
         if (epoch + 1) % save_weights_gap_epoch == 0 and epoch + 1 < num_epochs:
             option = ""
-            if var:
-                option = "_variance"
+            if use_variance:
+                if use_schedule:
+                    option = "_variance_schedule"
+                else:
+                    option = "_variance"
             elif evi:
                 option = "_evidential"
             torch.save(model.state_dict(),
                        os.path.join(save_weight_dir,
                                     "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
-    # Save the final model weights.
+    # 保存最终模型权重
     option = ""
-    if var:
-        option = "_variance"
+    if use_variance:
+        if use_schedule:
+            option = "_variance_schedule"
+        else:
+            option = "_variance"
     elif evi:
         option = "_evidential"
     torch.save(model.state_dict(),
                os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
     
-    # Generate and save plots for training and validation metrics.
+    # 生成并保存训练和验证指标图
     plot_dir = "/media/data1/ningtong/wzh/projects/Face-VII/plot"
     if not os.path.exists(plot_dir):
         os.makedirs(plot_dir)
     
-    # Plot Training and Validation Loss.
+    # 绘制训练和验证 Loss 曲线
     plt.figure()
     epochs_range = range(1, num_epochs + 1)
     plt.plot(epochs_range, train_loss_list, label="Train Loss")
@@ -233,7 +269,7 @@ def train(num_epochs,
     plt.savefig(os.path.join(plot_dir, "loss_plot.png"))
     plt.close()
     
-    # Plot Training and Validation Accuracy.
+    # 绘制训练和验证 Accuracy 曲线
     plt.figure()
     plt.plot(epochs_range, train_acc_list, label="Train Accuracy")
     plt.plot(epochs_range, val_acc_list, label="Validation Accuracy")
