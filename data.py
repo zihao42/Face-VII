@@ -60,15 +60,15 @@ def load_rafdb_dataset(img_dir, label_file_path, uk_mode, uk):
                     continue
                 else:
                     train_image_paths.append(os.path.join(img_dir, img_name))
-                    #train_labels.append(int(label) - 1)  # Convert to zero-based index
-                    train_labels.append(int(label))
+                    train_labels.append(int(label) - 1)  # Convert to zero-based index
+                    #train_labels.append(int(label))
             elif "test" in img_name:
                 test_image_paths.append(os.path.join(img_dir, img_name))
                 if label == uk_conv:
                     #test_labels.append(int(label) - 1)  # Convert to zero-based index
                     test_labels.append(8)
                 else:
-                    test_labels.append(int(label))
+                    test_labels.append(int(label)-1)
 
             
     return train_image_paths, train_labels, test_image_paths, test_labels

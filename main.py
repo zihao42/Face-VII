@@ -15,7 +15,7 @@ def set_seed(seed=42):
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train_mode", nargs=2, type=int, default=["70", "10"], help="train mode")
+    parser.add_argument("--train_mode", nargs=2, default= (70, "default_str"), help="train mode")
     args = parser.parse_args()
     uk_mode, uk = args.train_mode
 
