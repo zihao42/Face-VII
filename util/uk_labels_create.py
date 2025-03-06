@@ -148,7 +148,7 @@ def create_label_files(base_folder):
 
 def main():
     # Set the base folder path where the 'aligned' folder and 'list_patition_label.txt' reside.
-    base_folder = "/Users/julianna/Desktop/rafdb"
+    base_folder = "/media/data1/ningtong/wzh/projects/data/Image"
     
     # Step 1: Create dataset structure for images.
    ## data_path = create_dataset_structure(base_folder)
