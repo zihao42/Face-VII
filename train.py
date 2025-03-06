@@ -200,11 +200,11 @@ def train(num_epochs,
         train_loss_list.append(epoch_train_loss)
         train_acc_list.append(epoch_train_acc)
 
-        print(f"Epoch [{epoch + 1}/{num_epochs}]: Train Loss: {epoch_train_loss:.4f}, Accuracy: {epoch_train_acc:.2f}%")
+        print(f"\nEpoch [{epoch + 1}/{num_epochs}]: Train Loss: {epoch_train_loss:.4f}, Accuracy: {epoch_train_acc:.2f}%")
         writer.add_scalar("Loss/total", epoch_train_loss, epoch)
 
         if use_variance:
-            print(f"  Loss_ldist: {total_ldist / len(dataloader_train):.4f}, "
+            print(f"Loss_ldist: {total_ldist / len(dataloader_train):.4f}, "
                   f"Loss_lreg: {total_lreg / len(dataloader_train):.4f}, "
                   f"Loss_ce_loss: {total_ce_loss / len(dataloader_train):.4f}")
             writer.add_scalar("Loss/ldist", total_ldist / len(dataloader_train), epoch)
@@ -254,12 +254,12 @@ def train(num_epochs,
             epoch_val_acc = 100 * test_correct / test_total
             val_loss_list.append(epoch_val_loss)
             val_acc_list.append(epoch_val_acc)
-            print(f"Evaluation after Epoch {epoch + 1}: Eval Loss: {epoch_val_loss:.4f}, Accuracy: {epoch_val_acc:.2f}%")
+            print(f"\nEvaluation after Epoch {epoch + 1}: Eval Loss: {epoch_val_loss:.4f}, Accuracy: {epoch_val_acc:.2f}%")
             writer.add_scalar("Loss/total_eval", epoch_val_loss, epoch)
             if use_variance:
-                print(f"  Loss_ldist: {test_ldist / len(dataloader_eval):.4f}, "
+                print(f"Loss_ldist: {test_ldist / len(dataloader_eval):.4f}, "
                       f"Loss_lreg: {test_lreg / len(dataloader_eval):.4f}, "
-                      f"Loss_ce_loss: {test_ce_loss / len(dataloader_eval):.4f}")
+                      f"Loss_ce_loss: {test_ce_loss / len(dataloader_eval):.4f}\n")
                 writer.add_scalar("Loss/ldist_eval", test_ldist / len(dataloader_eval), epoch)
                 writer.add_scalar("Loss/lreg_eval", test_lreg / len(dataloader_eval), epoch)
                 writer.add_scalar("Loss/ce_loss_eval", test_ce_loss / len(dataloader_eval), epoch)
