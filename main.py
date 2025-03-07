@@ -1,4 +1,5 @@
 import torch
+import os
 import random
 from train import train
 from data import get_dataloaders
@@ -21,6 +22,8 @@ if __name__ == "__main__":
     dataloader_train, dataloader_eval, dataloader_test = get_dataloaders(img_dir, label_file_path)
 
     weights_dir = "./weights"
+    if not os.path.exists(weights_dir):
+        os.makedirs(weights_dir)
     train(10, 3, 7, dataloader_train, dataloader_eval, 5, weights_dir, evi=True, use_bn=True)
     # to enable batch_normalization, set use_bn=True
     # train(10, 3, 7, dataloader_train, dataloader_eval, 5, weights_dir, evi=True, use_bn=True)
