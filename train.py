@@ -211,7 +211,7 @@ def train(num_epochs,
             elif evi:
                 # for evidential
                 evidence = evi_head(features)
-                loss, ldist, lreg, ce_loss = evidential_loss_from_batch(evidence, labels)
+                loss, ldist, lreg, ce_loss = evidential_loss_from_batch(evidence, mapped_labels)
                 # again, just for consistency
                 total_ldist += ldist.item()
                 total_lreg += lreg.item()
@@ -281,7 +281,7 @@ def train(num_epochs,
                             test_ce_loss += losses[3].item()
                     elif evi:
                         evidence = evi_head(features)
-                        losses_evi = evidential_loss_from_batch(evidence, labels)
+                        losses_evi = evidential_loss_from_batch(evidence, mapped_labels)
                         test_loss += losses_evi[0].item()
                         # for consistency, will revise later
                         test_ldist += losses_evi[1].item()
@@ -339,7 +339,10 @@ def train(num_epochs,
     torch.save(model.state_dict(),
                os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
     
-    plot_dir = "/media/data1/ningtong/wzh/projects/Face-VII/plot"
+    # plot_dir = "/media/data1/ningtong/wzh/projects/Face-VII/plot"
+    # again, to run on colab
+    plot_dir = "./plot"
+
     if not os.path.exists(plot_dir):
         os.makedirs(plot_dir)
     
