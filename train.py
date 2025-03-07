@@ -165,7 +165,7 @@ def train(num_epochs,
     if evi:
         evi_head.to(device)
 
-    # Training loop
+    # Tensorboard writer
     writer = SummaryWriter()
 
     train_loss_list = []
@@ -173,6 +173,7 @@ def train(num_epochs,
     val_loss_list = []
     val_acc_list = []
 
+    # Training loop
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
@@ -180,7 +181,6 @@ def train(num_epochs,
         total_ldist = 0
         total_lreg = 0
         total_ce_loss = 0
-        # I still currently included them in evi for consistency, will revise later
 
         correct = 0
 
@@ -211,11 +211,7 @@ def train(num_epochs,
             elif evi:
                 # for evidential
                 evidence = evi_head(features)
-                loss, ldist, lreg, ce_loss = evidential_loss_from_batch(evidence, mapped_labels)
-                # again, just for consistency
-                total_ldist += ldist.item()
-                total_lreg += lreg.item()
-                total_ce_loss += ce_loss.item()
+                loss = evidential_loss_from_batch(evidence, mapped_labels)
             else:
                 loss = nn.CrossEntropyLoss()(outputs, mapped_labels)
             loss.backward()
@@ -240,6 +236,7 @@ def train(num_epochs,
             writer.add_scalar("Loss/lreg", total_lreg / len(dataloader_train), epoch)
             writer.add_scalar("Loss/ce_loss", total_ce_loss / len(dataloader_train), epoch)
 
+        # evaluation
         if (epoch + 1) % eval_gap_epoch == 0:
             model.eval()
 
@@ -281,12 +278,8 @@ def train(num_epochs,
                             test_ce_loss += losses[3].item()
                     elif evi:
                         evidence = evi_head(features)
-                        losses_evi = evidential_loss_from_batch(evidence, mapped_labels)
-                        test_loss += losses_evi[0].item()
-                        # for consistency, will revise later
-                        test_ldist += losses_evi[1].item()
-                        test_lreg += losses_evi[2].item()
-                        test_ce_loss += losses_evi[3].item()
+                        loss = evidential_loss_from_batch(evidence, mapped_labels)
+                        test_loss += loss.item()
                     else:
                         test_loss += nn.CrossEntropyLoss()(outputs, mapped_labels).item()
 
@@ -308,7 +301,7 @@ def train(num_epochs,
             val_acc_list.append(epoch_val_acc)
             print(f"\nEvaluation after Epoch {epoch + 1}: Eval Loss: {epoch_val_loss:.4f}, Accuracy: {epoch_val_acc:.2f}%")
             writer.add_scalar("Loss/total_eval", epoch_val_loss, epoch)
-            if use_variance or evi:
+            if use_variance:
                 print(f"Loss_ldist: {test_ldist / len(dataloader_eval):.4f}, "
                       f"Loss_lreg: {test_lreg / len(dataloader_eval):.4f}, "
                       f"Loss_ce_loss: {test_ce_loss / len(dataloader_eval):.4f}\n")

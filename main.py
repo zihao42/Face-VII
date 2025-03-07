@@ -54,6 +54,10 @@ if __name__ == "__main__":
     #       use_variance=True, use_schedule=False)
 
     # 3. 同时使用 Variance 和 Schedule
+    # train(num_epochs=15, eval_gap_epoch=1, num_labels=6, uk=uk, dataloader_train=dataloader_train,
+    #       dataloader_eval=dataloader_eval, save_weights_gap_epoch=1, save_weight_dir=weights_dir, use_variance=True, use_schedule=True)
+
+    # 4. Evidential, 不使用 batch normalization
     train(num_epochs=15, eval_gap_epoch=1, num_labels=6, uk=uk, dataloader_train=dataloader_train,
-          dataloader_eval=dataloader_eval, save_weights_gap_epoch=1, save_weight_dir=weights_dir, use_variance=True, use_schedule=True)
+          dataloader_eval=dataloader_eval, save_weights_gap_epoch=1, save_weight_dir=weights_dir, evi=True, use_bn=False)
 
