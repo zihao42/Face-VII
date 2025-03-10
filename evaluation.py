@@ -195,14 +195,14 @@ def main():
                 except Exception as e:
                     print("Error in one of the tasks:", e, flush=True)
         mean_accuracy = np.mean([m['accuracy'] for m in all_metrics])
-        mean_tp_percent = np.mean([m['TP%'] for m in all_metrics])
-        mean_fn_percent = np.mean([m['FN%'] for m in all_metrics])
-        mean_tn_percent = np.mean([m['TN%'] for m in all_metrics])
-        mean_fp_percent = np.mean([m['FP%'] for m in all_metrics])
+        total_tp = np.mean([m['TP'] for m in all_metrics])
+        total_fn = np.mean([m['FN'] for m in all_metrics])
+        total_tn = np.mean([m['TN'] for m in all_metrics])
+        total_fp = np.mean([m['FP'] for m in all_metrics])
         print("-" * 80)
-        print(f"Mean Metrics for Threshold {thresh:.2f}: Accuracy: {mean_accuracy:.2f}% | "
-              f"TP%: {mean_tp_percent:.2f}% | FN%: {mean_fn_percent:.2f}% | "
-              f"TN%: {mean_tn_percent:.2f}% | FP%: {mean_fp_percent:.2f}%", flush=True)
+        print(f"Metrics for Threshold {thresh:.2f}: Accuracy: {mean_accuracy:.2f}% | "
+                f"TP: {total_tp:.2f} | FN: {total_fn:.2f} | "
+                f"TN: {total_tn:.2f} | FP: {total_fp:.2f}", flush=True)
         print("-" * 80)
 
     log_file.close()
