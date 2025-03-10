@@ -217,7 +217,15 @@ def train(num_epochs,
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-            _, predicted = torch.max(outputs, 1)
+
+            if evi:
+                evidence = evi_head(features)
+                alpha = evidence + 1
+                probs = alpha / alpha.sum(dim=1, keepdim=True)
+                predicted = probs.argmax(dim=1)
+            else:
+                _, predicted = torch.max(outputs, 1)
+            
             correct += (predicted == mapped_labels).sum().item()
             total += mapped_labels.size(0)
         epoch_train_loss = total_loss / len(dataloader_train)
