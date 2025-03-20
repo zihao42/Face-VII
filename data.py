@@ -82,14 +82,15 @@ def get_dataloaders(img_dir, label_file_path, uk_mode, uk):
     eval_size = int(len(train_labels) * 0.2)
     eval_image_paths, eval_labels = train_image_paths[:eval_size], train_labels[:eval_size]
     train_image_paths, train_labels = train_image_paths[eval_size:], train_labels[eval_size:]
+    #test_image_paths, test_labels = test_image_paths[:10], test_labels[:10]
     
 
-    print("Number of train samples: " + str(len(train_image_paths)))
-    print("Number of train labels: " + str(len(train_labels)))
-    print("Number of eval samples: " + str(len(eval_image_paths)))
-    print("Number of eval labels: " + str(len(eval_labels)))
-    print("Number of test samples: " + str(len(test_image_paths)))
-    print("Number of test labels: " + str(len(test_labels)))
+    # print("Number of train samples: " + str(len(train_image_paths)))
+    # print("Number of train labels: " + str(len(train_labels)))
+    # print("Number of eval samples: " + str(len(eval_image_paths)))
+    # print("Number of eval labels: " + str(len(eval_labels)))
+    # print("Number of test samples: " + str(len(test_image_paths)))
+    # print("Number of test labels: " + str(len(test_labels)))
 
     # Define transformations
     transform = transforms.Compose([

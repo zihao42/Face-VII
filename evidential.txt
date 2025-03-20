@@ -1,0 +1,193 @@
+================================================================================
+Model Name: evidential
+================================================================================
+================================================================================
+Threshold: 0.05
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 89.28% | TP: 0 (0.00%) | FN: 329 (100.00%) | TN: 2739 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 97.59% | TP: 0 (0.00%) | FN: 74 (100.00%) | TN: 2994 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 61.38% | TP: 0 (0.00%) | FN: 1185 (100.00%) | TN: 1883 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 94.78% | TP: 0 (0.00%) | FN: 160 (100.00%) | TN: 2908 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 84.42% | TP: 0 (0.00%) | FN: 478 (100.00%) | TN: 2590 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 94.72% | TP: 0 (0.00%) | FN: 162 (100.00%) | TN: 2906 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 77.84% | TP: 0 (0.00%) | FN: 680 (100.00%) | TN: 2388 (100.00%) | FP: 0 (0.00%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.05: Accuracy: 85.71% | TP%: 0.00% | FN%: 100.00% | TN%: 100.00% | FP%: 0.00%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.15
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 97.59% | TP: 0 (0.00%) | FN: 74 (100.00%) | TN: 2994 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 89.28% | TP: 0 (0.00%) | FN: 329 (100.00%) | TN: 2739 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 61.38% | TP: 0 (0.00%) | FN: 1185 (100.00%) | TN: 1883 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 94.78% | TP: 0 (0.00%) | FN: 160 (100.00%) | TN: 2908 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 84.42% | TP: 0 (0.00%) | FN: 478 (100.00%) | TN: 2590 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 94.72% | TP: 0 (0.00%) | FN: 162 (100.00%) | TN: 2906 (100.00%) | FP: 0 (0.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 77.84% | TP: 0 (0.00%) | FN: 680 (100.00%) | TN: 2388 (100.00%) | FP: 0 (0.00%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.15: Accuracy: 85.71% | TP%: 0.00% | FN%: 100.00% | TN%: 100.00% | FP%: 0.00%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.25
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 87.52% | TP: 21 (6.38%) | FN: 308 (93.62%) | TN: 2664 (97.26%) | FP: 75 (2.74%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 95.76% | TP: 2 (2.70%) | FN: 72 (97.30%) | TN: 2936 (98.06%) | FP: 58 (1.94%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 91.75% | TP: 8 (5.00%) | FN: 152 (95.00%) | TN: 2807 (96.53%) | FP: 101 (3.47%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 61.34% | TP: 20 (1.69%) | FN: 1165 (98.31%) | TN: 1862 (98.88%) | FP: 21 (1.12%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 83.41% | TP: 7 (1.46%) | FN: 471 (98.54%) | TN: 2552 (98.53%) | FP: 38 (1.47%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 93.06% | TP: 6 (3.70%) | FN: 156 (96.30%) | TN: 2849 (98.04%) | FP: 57 (1.96%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 77.51% | TP: 9 (1.32%) | FN: 671 (98.68%) | TN: 2369 (99.20%) | FP: 19 (0.80%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.25: Accuracy: 84.34% | TP%: 3.18% | FN%: 96.82% | TN%: 98.07% | FP%: 1.93%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.35
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 52.35% | TP: 180 (54.71%) | FN: 149 (45.29%) | TN: 1426 (52.06%) | FP: 1313 (47.94%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 55.15% | TP: 62 (38.75%) | FN: 98 (61.25%) | TN: 1630 (56.05%) | FP: 1278 (43.95%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 55.54% | TP: 273 (23.04%) | FN: 912 (76.96%) | TN: 1431 (76.00%) | FP: 452 (24.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 62.55% | TP: 21 (28.38%) | FN: 53 (71.62%) | TN: 1898 (63.39%) | FP: 1096 (36.61%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 73.79% | TP: 133 (27.82%) | FN: 345 (72.18%) | TN: 2131 (82.28%) | FP: 459 (17.72%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 76.86% | TP: 68 (41.98%) | FN: 94 (58.02%) | TN: 2290 (78.80%) | FP: 616 (21.20%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 73.50% | TP: 131 (19.26%) | FN: 549 (80.74%) | TN: 2124 (88.94%) | FP: 264 (11.06%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.35: Accuracy: 64.25% | TP%: 33.42% | FN%: 66.58% | TN%: 71.08% | FP%: 28.92%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.45
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 47.98% | TP: 605 (51.05%) | FN: 580 (48.95%) | TN: 867 (46.04%) | FP: 1016 (53.96%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 24.97% | TP: 278 (84.50%) | FN: 51 (15.50%) | TN: 488 (17.82%) | FP: 2251 (82.18%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 30.77% | TP: 45 (60.81%) | FN: 29 (39.19%) | TN: 899 (30.03%) | FP: 2095 (69.97%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 30.38% | TP: 115 (71.88%) | FN: 45 (28.12%) | TN: 817 (28.09%) | FP: 2091 (71.91%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 64.18% | TP: 333 (48.97%) | FN: 347 (51.03%) | TN: 1636 (68.51%) | FP: 752 (31.49%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 61.28% | TP: 268 (56.07%) | FN: 210 (43.93%) | TN: 1612 (62.24%) | FP: 978 (37.76%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 53.88% | TP: 115 (70.99%) | FN: 47 (29.01%) | TN: 1538 (52.92%) | FP: 1368 (47.08%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.45: Accuracy: 44.78% | TP%: 63.47% | FN%: 36.53% | TN%: 43.67% | FP%: 56.33%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.55
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 17.47% | TP: 143 (89.38%) | FN: 17 (10.62%) | TN: 393 (13.51%) | FP: 2515 (86.49%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 15.12% | TP: 307 (93.31%) | FN: 22 (6.69%) | TN: 157 (5.73%) | FP: 2582 (94.27%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 14.37% | TP: 59 (79.73%) | FN: 15 (20.27%) | TN: 382 (12.76%) | FP: 2612 (87.24%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 43.58% | TP: 864 (72.91%) | FN: 321 (27.09%) | TN: 473 (25.12%) | FP: 1410 (74.88%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 38.59% | TP: 369 (77.20%) | FN: 109 (22.80%) | TN: 815 (31.47%) | FP: 1775 (68.53%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 30.77% | TP: 133 (82.10%) | FN: 29 (17.90%) | TN: 811 (27.91%) | FP: 2095 (72.09%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 39.73% | TP: 494 (72.65%) | FN: 186 (27.35%) | TN: 725 (30.36%) | FP: 1663 (69.64%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.55: Accuracy: 28.52% | TP%: 81.04% | FN%: 18.96% | TN%: 20.98% | FP%: 79.02%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.65
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 11.96% | TP: 325 (98.78%) | FN: 4 (1.22%) | TN: 42 (1.53%) | FP: 2697 (98.47%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 8.57% | TP: 154 (96.25%) | FN: 6 (3.75%) | TN: 109 (3.75%) | FP: 2799 (96.25%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 5.57% | TP: 71 (95.95%) | FN: 3 (4.05%) | TN: 100 (3.34%) | FP: 2894 (96.66%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 38.72% | TP: 1023 (86.33%) | FN: 162 (13.67%) | TN: 165 (8.76%) | FP: 1718 (91.24%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 21.84% | TP: 436 (91.21%) | FN: 42 (8.79%) | TN: 234 (9.03%) | FP: 2356 (90.97%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 16.62% | TP: 153 (94.44%) | FN: 9 (5.56%) | TN: 357 (12.28%) | FP: 2549 (87.72%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 29.76% | TP: 585 (86.03%) | FN: 95 (13.97%) | TN: 328 (13.74%) | FP: 2060 (86.26%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.65: Accuracy: 19.01% | TP%: 92.71% | FN%: 7.29% | TN%: 7.49% | FP%: 92.51%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.75
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 2.84% | TP: 73 (98.65%) | FN: 1 (1.35%) | TN: 14 (0.47%) | FP: 2980 (99.53%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 6.00% | TP: 159 (99.38%) | FN: 1 (0.62%) | TN: 25 (0.86%) | FP: 2883 (99.14%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 10.89% | TP: 328 (99.70%) | FN: 1 (0.30%) | TN: 6 (0.22%) | FP: 2733 (99.78%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 38.04% | TP: 1135 (95.78%) | FN: 50 (4.22%) | TN: 32 (1.70%) | FP: 1851 (98.30%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 16.53% | TP: 472 (98.74%) | FN: 6 (1.26%) | TN: 35 (1.35%) | FP: 2555 (98.65%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 9.16% | TP: 161 (99.38%) | FN: 1 (0.62%) | TN: 120 (4.13%) | FP: 2786 (95.87%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 25.33% | TP: 643 (94.56%) | FN: 37 (5.44%) | TN: 134 (5.61%) | FP: 2254 (94.39%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.75: Accuracy: 15.54% | TP%: 98.03% | FN%: 1.97% | TN%: 2.05% | FP%: 97.95%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.85
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 10.72% | TP: 329 (100.00%) | FN: 0 (0.00%) | TN: 0 (0.00%) | FP: 2739 (100.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 38.62% | TP: 1181 (99.66%) | FN: 4 (0.34%) | TN: 4 (0.21%) | FP: 1879 (99.79%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 5.25% | TP: 160 (100.00%) | FN: 0 (0.00%) | TN: 1 (0.03%) | FP: 2907 (99.97%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 2.44% | TP: 74 (100.00%) | FN: 0 (0.00%) | TN: 1 (0.03%) | FP: 2993 (99.97%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 15.61% | TP: 478 (100.00%) | FN: 0 (0.00%) | TN: 1 (0.04%) | FP: 2589 (99.96%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 5.87% | TP: 162 (100.00%) | FN: 0 (0.00%) | TN: 18 (0.62%) | FP: 2888 (99.38%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 22.78% | TP: 674 (99.12%) | FN: 6 (0.88%) | TN: 25 (1.05%) | FP: 2363 (98.95%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.85: Accuracy: 14.47% | TP%: 99.83% | FN%: 0.17% | TN%: 0.28% | FP%: 99.72%
+--------------------------------------------------------------------------------
+================================================================================
+Threshold: 0.95
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_fea_epoch_6_evidential.pth (UK: fea) |
+| Accuracy: 2.41% | TP: 74 (100.00%) | FN: 0 (0.00%) | TN: 0 (0.00%) | FP: 2994 (100.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sur_epoch_6_evidential.pth (UK: sur) |
+| Accuracy: 10.72% | TP: 329 (100.00%) | FN: 0 (0.00%) | TN: 0 (0.00%) | FP: 2739 (100.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_dis_epoch_4_evidential.pth (UK: dis) |
+| Accuracy: 5.22% | TP: 160 (100.00%) | FN: 0 (0.00%) | TN: 0 (0.00%) | FP: 2908 (100.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_hap_epoch_8_evidential.pth (UK: hap) |
+| Accuracy: 38.62% | TP: 1185 (100.00%) | FN: 0 (0.00%) | TN: 0 (0.00%) | FP: 1883 (100.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_sad_epoch_6_evidential.pth (UK: sad) |
+| Accuracy: 15.58% | TP: 478 (100.00%) | FN: 0 (0.00%) | TN: 0 (0.00%) | FP: 2590 (100.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_neu_epoch_5_evidential.pth (UK: neu) |
+| Accuracy: 22.16% | TP: 680 (100.00%) | FN: 0 (0.00%) | TN: 0 (0.00%) | FP: 2388 (100.00%)
+Weight: /media/data1/ningtong/wzh/projects/Face-VII-zeyuan_dev/weights/swin_tiny_rafdb_ang_epoch_6_evidential.pth (UK: ang) |
+| Accuracy: 5.28% | TP: 162 (100.00%) | FN: 0 (0.00%) | TN: 0 (0.00%) | FP: 2906 (100.00%)
+--------------------------------------------------------------------------------
+Mean Metrics for Threshold 0.95: Accuracy: 14.29% | TP%: 100.00% | FN%: 0.00% | TN%: 0.00% | FP%: 100.00%
+--------------------------------------------------------------------------------
