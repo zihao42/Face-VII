@@ -5,6 +5,7 @@ import concurrent.futures
 import torch
 from data import get_dataloaders
 from predict import predict_image  # 引用 predict.py 中的 predict_image
+from enn_head import EvidentialClassificationHead
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -75,7 +76,20 @@ def evaluate_weight(weight_file, uk, threshold, gpu_id):
         num_labels=num_labels
     )
     state_dict = torch.load(weight_file, map_location=device)
-    model.load_state_dict(state_dict)
+    
+    # check if enn head is available
+    enn_head = None
+    if 'evi_head_state_dict' in state_dict:
+        model.load_state_dict(state_dict['model_state_dict'])
+        # default use_bn=True, will revise in later versions
+        enn_head = EvidentialClassificationHead(model.config.hidden_size, num_labels, use_bn=True)
+        enn_head.load_state_dict(state_dict['evi_head_state_dict'])
+        enn_head.to(device)
+        enn_head.eval()
+        log(f"[GPU:{gpu_id}] ENN head loaded.")
+    else:
+        model.load_state_dict(state_dict)
+
     model.to(device)
     model.eval()
     log(f"[GPU:{gpu_id}] Model loaded and set to eval mode.")
@@ -100,7 +114,7 @@ def evaluate_weight(weight_file, uk, threshold, gpu_id):
                 unknown_total += 1
 
             # 调用 predict_image，传入预加载 model 避免重复加载
-            predicted_class, _ = predict_image(weight_file, image, threshold, model=model)
+            predicted_class, _ = predict_image(weight_file, image, threshold, model=model, enn_head=enn_head)
             if expected == 8:
                 if predicted_class == 8:
                     TP += 1

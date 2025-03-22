@@ -326,9 +326,16 @@ def train(num_epochs,
                     option = "_variance"
             elif evi:
                 option = "_evidential"
-            torch.save(model.state_dict(),
-                       os.path.join(save_weight_dir,
-                                    "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
+            
+            # for evidential mode, also save the evidential head
+            if evi:
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'evi_head_state_dict': evi_head.state_dict()
+                }, os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
+            else:
+                torch.save(model.state_dict(), os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
+
     option = ""
     if use_variance:
         if use_schedule:
@@ -336,9 +343,20 @@ def train(num_epochs,
         else:
             option = "_variance"
     elif evi:
-        option = "_evidential"
-    torch.save(model.state_dict(),
-               os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
+        if use_bn:
+            option = "_evidential_bn"
+        else:
+            option = "_evidential"
+
+    # again, for evidential mode, also save the evidential head
+    if evi:
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'evi_head_state_dict': evi_head.state_dict()
+        }, os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
+    else:
+        torch.save(model.state_dict(), os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
+
     
     # plot_dir = "/media/data1/ningtong/wzh/projects/Face-VII/plot"
     # again, to run on colab
