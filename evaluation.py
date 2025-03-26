@@ -10,8 +10,13 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # 全局配置参数
-IMG_DIR = "/media/data1/ningtong/wzh/projects/data/Image/aligned"
-LABEL_FILE = "/media/data1/ningtong/wzh/projects/data/Image/list_patition_label.txt"
+# IMG_DIR = "/media/data1/ningtong/wzh/projects/data/Image/aligned"
+# LABEL_FILE = "/media/data1/ningtong/wzh/projects/data/Image/list_patition_label.txt"
+
+# again, for running on colab
+IMG_DIR = "./RAF-DB/aligned"
+LABEL_FILE = "./RAF-DB/list_patition_label.txt"
+
 UK_MODE = "61"  # 更新后的 UK mode
 model_name_pretrained = "microsoft/swin-tiny-patch4-window7-224"
 num_labels = 6   # 模型输出标签数（训练时设定为6）
