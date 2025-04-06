@@ -20,7 +20,9 @@ LABEL_FILE = "./RAF-DB/list_patition_label.txt"
 UK_MODE = "61"  # 更新后的 UK mode
 model_name_pretrained = "microsoft/swin-tiny-patch4-window7-224"
 num_labels = 6   # 模型输出标签数（训练时设定为6）
-num_gpus = 4     # 可用 GPU 数量
+# num_gpus = 4     # 可用 GPU 数量
+# to run on colab
+num_gpus = 1
 uk_list = ["sur", "fea", "dis", "hap", "sad", "ang", "neu"]  # 7 个未知类别
 
 def reorder_weight_files(weight_files):
