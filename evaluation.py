@@ -5,16 +5,24 @@ import concurrent.futures
 import torch
 from data import get_dataloaders
 from predict import predict_image  # 引用 predict.py 中的 predict_image
+from enn_head import EvidentialClassificationHead
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # 全局配置参数
-IMG_DIR = "/media/data1/ningtong/wzh/projects/data/Image/aligned"
-LABEL_FILE = "/media/data1/ningtong/wzh/projects/data/Image/list_patition_label.txt"
+# IMG_DIR = "/media/data1/ningtong/wzh/projects/data/Image/aligned"
+# LABEL_FILE = "/media/data1/ningtong/wzh/projects/data/Image/list_patition_label.txt"
+
+# again, for running on colab
+IMG_DIR = "./RAF-DB/aligned"
+LABEL_FILE = "./RAF-DB/list_patition_label.txt"
+
 UK_MODE = "61"  # 更新后的 UK mode
 model_name_pretrained = "microsoft/swin-tiny-patch4-window7-224"
 num_labels = 6   # 模型输出标签数（训练时设定为6）
-num_gpus = 4     # 可用 GPU 数量
+# num_gpus = 4     # 可用 GPU 数量
+# to run on colab
+num_gpus = 1
 uk_list = ["sur", "fea", "dis", "hap", "sad", "ang", "neu"]  # 7 个未知类别
 
 def reorder_weight_files(weight_files):
@@ -75,7 +83,20 @@ def evaluate_weight(weight_file, uk, threshold, gpu_id):
         num_labels=num_labels
     )
     state_dict = torch.load(weight_file, map_location=device)
-    model.load_state_dict(state_dict)
+    
+    # check if enn head is available
+    enn_head = None
+    if 'evi_head_state_dict' in state_dict:
+        model.load_state_dict(state_dict['model_state_dict'])
+        # default use_bn=True, will revise in later versions
+        enn_head = EvidentialClassificationHead(model.config.hidden_size, num_labels, use_bn=True)
+        enn_head.load_state_dict(state_dict['evi_head_state_dict'])
+        enn_head.to(device)
+        enn_head.eval()
+        log(f"[GPU:{gpu_id}] ENN head loaded.")
+    else:
+        model.load_state_dict(state_dict)
+
     model.to(device)
     model.eval()
     log(f"[GPU:{gpu_id}] Model loaded and set to eval mode.")
@@ -100,7 +121,7 @@ def evaluate_weight(weight_file, uk, threshold, gpu_id):
                 unknown_total += 1
 
             # 调用 predict_image，传入预加载 model 避免重复加载
-            predicted_class, _ = predict_image(weight_file, image, threshold, model=model)
+            predicted_class, _ = predict_image(weight_file, image, threshold, model=model, enn_head=enn_head)
             if expected == 8:
                 if predicted_class == 8:
                     TP += 1
