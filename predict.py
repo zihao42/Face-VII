@@ -4,6 +4,7 @@ from transformers import SwinForImageClassification, logging as hf_logging
 import torchvision.transforms as transforms
 from PIL import Image
 import warnings
+from enn_head import EvidentialClassificationHead
 
 hf_logging.set_verbosity_error()
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -34,7 +35,7 @@ def load_image(image_input):
         image = Image.open(image_input).convert("RGB")
         return transform_eval(image).unsqueeze(0)
 
-def predict_image(weights, image, threshold=0.7, model=None):
+def predict_image(weights, image, threshold=0.7, model=None, enn_head=None):
     """
     根据给定的 weights 加载模型，处理 image（可以是文件路径或 tensor），
     返回预测类别及其注释信息：
@@ -55,7 +56,16 @@ def predict_image(weights, image, threshold=0.7, model=None):
             num_labels=num_labels
         )
         state_dict = torch.load(weights, map_location=device)
-        model.load_state_dict(state_dict)
+        # also load enn head if available
+        if 'evi_head_state_dict' in state_dict:
+            model.load_state_dict(state_dict['model_state_dict'])
+            # now default use_bn=True, will revise in later versions
+            enn_head = EvidentialClassificationHead(model.config.hidden_size, num_labels, use_bn=True) 
+            enn_head.load_state_dict(state_dict['evi_head_state_dict'])
+            enn_head.to(device)
+            enn_head.eval()
+        else: 
+            model.load_state_dict(state_dict)
         model.to(device)
         model.eval()
     else:
@@ -65,10 +75,26 @@ def predict_image(weights, image, threshold=0.7, model=None):
     img_tensor = load_image(image).to(device)
     
     with torch.no_grad():
-        outputs = model(img_tensor)
-        logits = outputs.logits  # shape: (1,6)
-        probs = torch.softmax(logits, dim=1)
-        max_prob, pred_idx = torch.max(probs, dim=1)
+        if enn_head is not None:
+            # hook the features like we did in train.py
+            pooled_representation = {}
+            def hook_fn(module, input, output):
+                pooled_representation["features"] = output.pooler_output
+            model.swin.register_forward_hook(hook_fn)
+            # for the hook only
+            _ = model(img_tensor)
+            features = pooled_representation["features"]
+            evidence = enn_head(features)
+            # convert evidence to Dirichlet parameters
+            alpha = evidence + 1.0
+            # compute prob with D distribution
+            probs = alpha / alpha.sum(dim=1, keepdim=True)
+            max_prob, pred_idx = torch.max(probs, dim=1)
+        else:
+            outputs = model(img_tensor)
+            logits = outputs.logits  # shape: (1,6)
+            probs = torch.softmax(logits, dim=1)
+            max_prob, pred_idx = torch.max(probs, dim=1)
     
     # 根据阈值判断：若最大概率低于 threshold，则视为未知（类别 8）
     if max_prob.item() < threshold:

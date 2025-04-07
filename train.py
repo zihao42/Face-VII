@@ -6,7 +6,8 @@ from transformers import SwinForImageClassification
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
-from loss import variance_aware_loss_from_batch, scheduled_variance_aware_loss
+from loss import variance_aware_loss_from_batch, evidential_loss_from_batch, scheduled_variance_aware_loss
+from enn_head import EvidentialClassificationHead
 
 ##############################
 # 标签映射相关函数
@@ -93,7 +94,8 @@ def train(num_epochs,
           save_weight_dir,
           use_variance=False,
           use_schedule=False,
-          evi=False):
+          evi=False,
+          use_bn=False):
     """
     训练模型。
     
@@ -143,10 +145,27 @@ def train(num_epochs,
     )
     model.swin.register_forward_hook(hook_fn)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    # define optimizer
+    evi_head = None
+    # define EDL head in evi mode
+    if evi:
+        in_features = model.config.hidden_size
+        evi_head = EvidentialClassificationHead(in_features, num_labels, use_bn)
+
+    if evi:
+        # have to take account of the parameters of the evidential head
+        optimizer = torch.optim.AdamW(list(model.parameters()) + list(evi_head.parameters()), lr=5e-5)
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using Device:", device)
     model.to(device)
+    # to device only in evi mode
+    if evi:
+        evi_head.to(device)
+
+    # Tensorboard writer
     writer = SummaryWriter()
 
     train_loss_list = []
@@ -154,6 +173,7 @@ def train(num_epochs,
     val_loss_list = []
     val_acc_list = []
 
+    # Training loop
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
@@ -187,12 +207,24 @@ def train(num_epochs,
                 total_ldist += ldist.item()
                 total_lreg += lreg.item()
                 total_ce_loss += ce_loss.item()
+            elif evi:
+                # for evidential
+                evidence = evi_head(features)
+                loss = evidential_loss_from_batch(evidence, mapped_labels)
             else:
                 loss = nn.CrossEntropyLoss()(outputs, mapped_labels)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-            _, predicted = torch.max(outputs, 1)
+
+            if evi:
+                evidence = evi_head(features)
+                alpha = evidence + 1
+                probs = alpha / alpha.sum(dim=1, keepdim=True)
+                predicted = probs.argmax(dim=1)
+            else:
+                _, predicted = torch.max(outputs, 1)
+            
             correct += (predicted == mapped_labels).sum().item()
             total += mapped_labels.size(0)
         epoch_train_loss = total_loss / len(dataloader_train)
@@ -213,6 +245,11 @@ def train(num_epochs,
 
         if (epoch + 1) % eval_gap_epoch == 0:
             model.eval()
+
+            # for edl head if in evi mode
+            if evi_head:
+                evi_head.eval()
+            
             test_correct = 0
             test_loss = 0
             test_total = 0
@@ -245,11 +282,25 @@ def train(num_epochs,
                             test_ldist += losses[1].item()
                             test_lreg += losses[2].item()
                             test_ce_loss += losses[3].item()
+                    elif evi:
+                        evidence = evi_head(features)
+                        loss = evidential_loss_from_batch(evidence, mapped_labels)
+                        test_loss += loss.item()
                     else:
                         test_loss += nn.CrossEntropyLoss()(outputs, mapped_labels).item()
-                    _, predicted = torch.max(outputs, 1)
+
+                    # for evi use edl head instead of Swin built-in logits
+                    if evi:
+                        evidence = evi_head(features)
+                        alpha = evidence + 1
+                        probs = alpha / alpha.sum(dim=1, keepdim=True)
+                        predicted = probs.argmax(dim=1)
+                    else:
+                        _, predicted = torch.max(outputs, 1)
+
                     test_correct += (predicted == mapped_labels).sum().item()
                     test_total += mapped_labels.size(0)
+
             epoch_val_loss = test_loss / len(dataloader_eval)
             epoch_val_acc = 100 * test_correct / test_total
             val_loss_list.append(epoch_val_loss)
@@ -273,9 +324,16 @@ def train(num_epochs,
                     option = "_variance"
             elif evi:
                 option = "_evidential"
-            torch.save(model.state_dict(),
-                       os.path.join(save_weight_dir,
-                                    "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
+            
+            # for evidential mode, also save the evidential head
+            if evi:
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'evi_head_state_dict': evi_head.state_dict()
+                }, os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
+            else:
+                torch.save(model.state_dict(), os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
+
     option = ""
     if use_variance:
         if use_schedule:
@@ -283,11 +341,25 @@ def train(num_epochs,
         else:
             option = "_variance"
     elif evi:
-        option = "_evidential"
-    torch.save(model.state_dict(),
-               os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
+        if use_bn:
+            option = "_evidential_bn"
+        else:
+            option = "_evidential"
+
+    # again, for evidential mode, also save the evidential head
+    if evi:
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'evi_head_state_dict': evi_head.state_dict()
+        }, os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
+    else:
+        torch.save(model.state_dict(), os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
+
     
-    plot_dir = "/media/data1/ningtong/wzh/projects/Face-VII/plot"
+    # plot_dir = "/media/data1/ningtong/wzh/projects/Face-VII/plot"
+    # again, to run on colab
+    plot_dir = "./plot"
+
     if not os.path.exists(plot_dir):
         os.makedirs(plot_dir)
     
