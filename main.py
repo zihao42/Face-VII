@@ -41,6 +41,7 @@ if __name__ == "__main__":
     if not os.path.exists(weights_dir):
         os.makedirs(weights_dir)
     
+    
     # 选择你需要的训练模式，取消对应调用的注释即可：
 
     # 1. Baseline（标准交叉熵，不使用 Variance 和 Schedule）
