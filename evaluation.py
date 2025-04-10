@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import numpy as np
 import concurrent.futures
@@ -110,18 +111,29 @@ def evaluate_weight(weight_file, uk, threshold, gpu_id):
     unknown_total = 0
     known_total = 0
 
+    # just so we can use that for AUROC for evi model
+    unknown_scores_list = []
+    binary_labels_list = []
+
     for images, labels in dataloader_test:
         for image, gt in zip(images, labels):
             total += 1
             if gt != 8:
                 expected = gt.item() + 1
                 known_total += 1
+                binary_label = 0
             else:
                 expected = 8
                 unknown_total += 1
+                binary_label = 1
 
             # 调用 predict_image，传入预加载 model 避免重复加载
-            predicted_class, _ = predict_image(weight_file, image, threshold, model=model, enn_head=enn_head)
+            predicted_class, _, unknown_score = predict_image(weight_file, image, threshold, model=model, enn_head=enn_head)
+
+            if enn_head:
+                unknown_scores_list.append(unknown_score)
+                binary_labels_list.append(binary_label)
+
             if expected == 8:
                 if predicted_class == 8:
                     TP += 1
@@ -141,6 +153,9 @@ def evaluate_weight(weight_file, uk, threshold, gpu_id):
     tn_percent = (TN / known_total * 100) if known_total > 0 else 0
     fp_percent = (FP / known_total * 100) if known_total > 0 else 0
 
+    # known accuracy for oscr of evidential model
+    known_accuracy = (TN / known_total) if known_total > 0 else 0
+
     result = {
         "weight": weight_file,
         "uk": uk,
@@ -151,8 +166,19 @@ def evaluate_weight(weight_file, uk, threshold, gpu_id):
         "FP": FP, "FP%": fp_percent,
         "total": total,
         "unknown_total": unknown_total,
-        "known_total": known_total
+        "known_total": known_total,
+        "known_accuracy": known_accuracy
     }
+
+    # save the lists if in evidential mode
+    if enn_head:
+        save_dir = os.path.join("auroc-oscr")
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        np.save(os.path.join(save_dir, "unknown_scores.npy"), np.array(unknown_scores_list))
+        np.save(os.path.join(save_dir, "unknown_labels.npy"), np.array(binary_labels_list))
+        log("Saved unknown_scores.npy and unknown_labels.npy in the auroc-oscr folder for AUROC computation.")
+    
     return result, log_stream.getvalue()
 
 def main():
@@ -192,6 +218,9 @@ def main():
     print(f"Model Name: {model_name_print}")
     print("=" * 80)
 
+    # record the know accuracy for evidential model
+    known_acc_data = []
+
     # 对多个阈值进行评估
     thresholds = np.arange(0.05, 1.0, 0.1)
     for thresh in thresholds:
@@ -216,6 +245,11 @@ def main():
                 except Exception as e:
                     print("Error in one of the tasks:", e, flush=True)
         mean_accuracy = np.mean([m['accuracy'] for m in all_metrics])
+
+        # Compute mean known accuracy over all weight files for this threshold:
+        mean_known_acc = np.mean([m['known_accuracy'] for m in all_metrics])
+        known_acc_data.append((thresh, mean_known_acc))
+
         total_tp = np.mean([m['TP'] for m in all_metrics])
         total_fn = np.mean([m['FN'] for m in all_metrics])
         total_tn = np.mean([m['TN'] for m in all_metrics])
@@ -225,6 +259,17 @@ def main():
                 f"TP: {total_tp:.2f} | FN: {total_fn:.2f} | "
                 f"TN: {total_tn:.2f} | FP: {total_fp:.2f}", flush=True)
         print("-" * 80)
+
+    # Save known_acc_data if we are evaluating an evidential model.
+    evi_name = "evi"
+    if evi_name in os.path.basename(weight_files[0]):
+        known_acc_array = np.array(known_acc_data)
+        save_dir = os.path.join("auroc-oscr")
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        np.save(os.path.join(save_dir, "known_acc.npy"), known_acc_array)
+        print("Saved known_acc.npy in the auroc-oscr folder for OSCR computation.")
+
 
     log_file.close()
 

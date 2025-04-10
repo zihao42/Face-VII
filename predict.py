@@ -125,7 +125,9 @@ def predict_image(weights, image, threshold=0.7, model=None, enn_head=None):
             evidence = enn_head(features)
             # convert evidence to Dirichlet parameters
             alpha = evidence + 1.0
-            # compute prob with D distribution
+            alpha0 = torch.sum(alpha, dim=1)
+            unknown_score = num_labels / alpha0
+            # not actually used for AUROC
             probs = alpha / alpha.sum(dim=1, keepdim=True)
             max_prob, pred_idx = torch.max(probs, dim=1)
         else:
@@ -133,6 +135,8 @@ def predict_image(weights, image, threshold=0.7, model=None, enn_head=None):
             logits = outputs.logits  # shape: (1,6)
             probs = torch.softmax(logits, dim=1)
             max_prob, pred_idx = torch.max(probs, dim=1)
+            # not used for AUROC
+            unknown_score = 1 - max_prob
     
     # 根据阈值判断：若最大概率低于 threshold，则视为未知（类别 8）
     if max_prob.item() < threshold:
@@ -167,7 +171,7 @@ def predict_image(weights, image, threshold=0.7, model=None, enn_head=None):
         }
         annot = annot_dict.get(predicted_class, "Unknown")
     
-    return predicted_class, annot
+    return predicted_class, annot, unknown_score.item()
 
 def main():
     parser = argparse.ArgumentParser(
