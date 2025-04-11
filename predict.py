@@ -126,6 +126,7 @@ def predict_image(weights, image, threshold=0.7, model=None, enn_head=None):
             # convert evidence to Dirichlet parameters
             alpha = evidence + 1.0
             alpha0 = torch.sum(alpha, dim=1)
+            num_labels = alpha.shape[1]
             unknown_score = num_labels / alpha0
             # not actually used for AUROC
             probs = alpha / alpha.sum(dim=1, keepdim=True)
