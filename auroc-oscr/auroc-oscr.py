@@ -35,7 +35,7 @@ def parse_txt(file_path):
             data[current_threshold]["FP"] += fp
 
         # Extract Mean Accuracy
-        match = re.search(r"Mean Metrics for Threshold [0-9.]+: Accuracy: ([0-9.]+)%", line)
+        match = re.search(r"Metrics for Threshold [0-9.]+: Accuracy: ([0-9.]+)%", line)
         if match and current_threshold is not None:
             data[current_threshold]["Accuracy"] = float(match.group(1)) / 100  # convert to decimal
 
@@ -71,7 +71,7 @@ def compute_metrics(data):
         rejection_list.append(rejection)
 
     print("-" * 60)
-    return (np.array(thresholds), np.array(jjtpr_list), np.array(fpr_list),
+    return (np.array(thresholds), np.array(tpr_list), np.array(fpr_list),
             np.array(accuracy_list), np.array(rejection_list))
 
 def calculate_bestfit_auc(x_vals, y_vals, degree=3, force_endpoints=False):
@@ -129,7 +129,7 @@ def plot_combined_curves(models, x_arrays, y_arrays, output_path, title, xlabel,
 
 if __name__ == "__main__":
     # The following file names are assumed. Adjust if needed.
-    file_paths = ["baseline_2.txt", "variance_2.txt", "evidential_2.txt"]
+    file_paths = ["baseline_2.txt", "variance_2.txt", "evidential.txt"]
     model_names = ["Base Model", "Variance Model", "Evidential Model", ]
     
     all_tprs, all_fprs, all_accuracies, all_rejections = [], [], [], []
