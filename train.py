@@ -1,48 +1,37 @@
-from datetime import datetime
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import os
 import torch
-import torch.nn as nn
-from transformers import SwinForImageClassification
 from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
-import matplotlib.pyplot as plt
-from loss import variance_aware_loss_from_batch, evidential_loss_from_batch, scheduled_variance_aware_loss
-from enn_head import EvidentialClassificationHead
+import timm
+import numpy as np
+import argparse
 
-##############################
-# 标签映射相关函数
-##############################
-def generate_label_map(uk):
+# 从 transformers 导入 Wav2Vec2 模型及其特征提取器
+from transformers import Wav2Vec2Model, Wav2Vec2FeatureExtractor
+
+# 从 data.py 中导入数据加载函数以及组合划分的定义
+from data import get_openset_dataloaders, COMBINATION_SPLITS
+
+def generate_label_map(combination_id):
     """
-    根据传入的要舍弃的标签（chosen_label），生成映射字典。
-    数据集原始标签范围为 0～6（共7个类别），
-    舍弃 chosen_label 后，其余 6 个标签映射为连续索引 0～5。
+    根据传入的组合编号（1～10）生成标签映射字典和逆映射字典。
     
     参数：
-      chosen_label：要舍弃的标签（字符串或整数），例如 "3" 或 3
+      combination_id: 组合编号（整数），例如 1、2、…、10
+      
     返回：
-      label_map：字典，例如若 chosen_label 为 3，则返回 {0:0, 1:1, 2:2, 4:3, 5:4, 6:5}
+      label_map: 字典，将 known 标签映射为连续索引，例如 {原始标签: 新标签}。
+      inv_label_map: 逆映射字典，例如 {新标签: 原始标签}。
     """
-    if uk == "sur":
-        chosen_label = 0
-    elif uk == "fea":
-        chosen_label = 1
-    elif uk == "dis":
-        chosen_label = 2
-    elif uk == "hap":
-        chosen_label = 3
-    elif uk == "sad":
-        chosen_label = 4
-    elif uk == "ang":
-        chosen_label = 5
-    elif uk == "neu":
-        chosen_label = 6
-    else:
-        chosen_label = None
-    
-    valid_labels = [i for i in range(7) if i != chosen_label]
-    label_map = {orig: new for new, orig in enumerate(sorted(valid_labels))}
-    return label_map
+    if combination_id not in COMBINATION_SPLITS:
+        raise ValueError(f"Combination {combination_id} is not defined. Available combinations: {list(COMBINATION_SPLITS.keys())}")
+    known_labels = COMBINATION_SPLITS[combination_id]["known"]
+    # 按照顺序生成连续的索引映射（例如：{1: 0, 4: 1, 5: 2, 6: 3, 7: 4}）
+    label_map = {orig: new for new, orig in enumerate(sorted(known_labels))}
+    inv_label_map = {v: k for k, v in label_map.items()}
+    return label_map, inv_label_map
 
 def map_labels(labels, mapping):
     """
@@ -52,338 +41,114 @@ def map_labels(labels, mapping):
                             dtype=torch.long, device=labels.device)
     return mapped
 
-##############################
-# 辅助函数：计算均值与方差、未知评分
-##############################
-def compute_mu_var(z, labels, eps=1e-6):
-    unique_labels = torch.unique(labels)
-    mu_list = []
-    var_list = []
-    for cl in sorted(unique_labels.tolist()):
-        cl_mask = (labels == cl)
-        z_cl = z[cl_mask]
-        mu_cl = z_cl.mean(dim=0)
-        var_cl = z_cl.var(dim=0, unbiased=False) + eps
-        mu_list.append(mu_cl)
-        var_list.append(var_cl)
-    mu_tensor = torch.stack(mu_list, dim=0)
-    var_tensor = torch.stack(var_list, dim=0)
-    return mu_tensor, var_tensor
-
-def compute_unknown_score(z, labels, eps=1e-6):
-    mu, var = compute_mu_var(z, labels, eps)
-    B, M = z.shape
-    z_expanded = z.unsqueeze(1)      # Shape: (B, 1, M)
-    mu_expanded = mu.unsqueeze(0)      # Shape: (1, K', M)
-    diff = z_expanded - mu_expanded
-    normalized_squared = diff ** 2 / (var.unsqueeze(0) + eps)
-    d = normalized_squared.sum(dim=2)  # 每个样本与各类别的 Mahalanobis 距离
-    S, _ = d.min(dim=1)
-    return S
-
-##############################
-# 训练函数
-##############################
-def train(num_epochs,
-          eval_gap_epoch,
-          num_labels,
-          uk,
-          dataloader_train,
-          dataloader_eval,
-          save_weights_gap_epoch,
-          save_weight_dir,
-          use_variance=False,
-          use_schedule=False,
-          evi=False,
-          use_bn=False):
-    """
-    训练模型。
-    
-    参数：
-      num_epochs：训练总轮数
-      eval_gap_epoch：每隔多少个 epoch 进行一次评估
-      num_labels：映射后类别数量，应为 6
-      chosen_label：要舍弃的标签（原始数据中 0～6 中的一个），例如 "3" 或 3
-      dataloader_train：训练数据加载器，返回的标签为原始标签（例如 0,1,2,4,5,6）
-      dataloader_eval：验证数据加载器，同上
-      save_weights_gap_epoch：每隔多少个 epoch 保存一次模型权重
-      save_weight_dir：保存权重的目录
-      use_variance, use_schedule, evi：不同模式的训练开关
-      
-    说明：
-      数据加载器返回的原始标签保持不变（例如 0,1,2,4,5,6），
-      本函数内部会生成一个映射字典，将这些标签转换为连续的 0～5，
-      以满足 nn.CrossEntropyLoss 的要求，并确保模型输出与标签匹配。
-    """
-    # 生成标签映射字典，例如若 chosen_label 为 3，则映射为 {0:0, 1:1, 2:2, 4:3, 5:4, 6:5}
-    label_map = generate_label_map(uk)
-    print("生成的标签映射：", label_map)
-
-    if use_variance:
-        if use_schedule:
-            print("Training with Variance and Schedule!")
-        else:
-            print("Training with Variance (without Schedule)!")
-    elif evi:
-        print("Evidential version training starts!")
-    else:
-        print("Baseline training starts (standard cross-entropy loss)!")
-
-    date_time_str = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
-    pooled_representation = {}
-
-    # 注册 hook，用于捕获进入分类器前的特征
-    def hook_fn(module, input, output):
-        pooled_representation["features"] = output.pooler_output
-
-    model_name = "microsoft/swin-tiny-patch4-window7-224"
-    # 这里使用 num_labels（映射后数量，应该为6）
-    model = SwinForImageClassification.from_pretrained(
-        model_name,
-        ignore_mismatched_sizes=True,
-        num_labels=num_labels
-    )
-    model.swin.register_forward_hook(hook_fn)
-
-    # define optimizer
-    evi_head = None
-    # define EDL head in evi mode
-    if evi:
-        in_features = model.config.hidden_size
-        evi_head = EvidentialClassificationHead(in_features, num_labels, use_bn)
-
-    if evi:
-        # have to take account of the parameters of the evidential head
-        optimizer = torch.optim.AdamW(list(model.parameters()) + list(evi_head.parameters()), lr=5e-5)
-    else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
-
+def main(args):
+    # 设置设备（优先使用 GPU）
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using Device:", device)
-    model.to(device)
-    # to device only in evi mode
-    if evi:
-        evi_head.to(device)
+    
+    # 根据传入的组合编号生成标签映射和逆映射
+    label_map, inv_label_map = generate_label_map(args.combination)
+    print(f"当前组合编号：{args.combination}")
+    print(f"Known label mapping (original -> mapped): {label_map}")
+    print(f"Inverse mapping (mapped -> original): {inv_label_map}")
 
-    # Tensorboard writer
-    writer = SummaryWriter()
+    # ===================== 数据路径设置 =====================
+    video_dir = "/path/to/ravdess/videos"         # 视频文件所在目录
+    audio_dir = "/path/to/ravdess/audios"          # 音频文件所在目录（若音频嵌入视频中，可设为 None）
+    label_file = "/path/to/labels.xlsx"            # 标签文件路径
 
-    train_loss_list = []
-    train_acc_list = []
-    val_loss_list = []
-    val_acc_list = []
+    # ===================== 加载训练数据 =====================
+    # 此处假设使用 data.py 中定义的 get_dataloaders（可根据实际情况调整）
+    train_loader, _, _ = get_openset_dataloaders(
+        video_dir,
+        audio_dir,
+        label_file,
+        modality='both',
+        batch_size=4,
+        num_frames=16,     # 采样视频帧数
+        test_ratio=0.1,
+        eval_ratio=0.2
+    )
 
-    # Training loop
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0
-        total = 0
-        total_ldist = 0
-        total_lreg = 0
-        total_ce_loss = 0
+    # ===================== 初始化 Wav2Vec 2.0 模型 =====================
+    # 使用 Hugging Face 上的 facebook/wav2vec2-base 模型
+    audio_processor = Wav2Vec2FeatureExtractor.from_pretrained("facebook/wav2vec2-base")
+    audio_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base")
+    audio_model.to(device)
+    audio_model.eval()
 
-        correct = 0
+    # ===================== 初始化 Swin Transformer 3D 模型 =====================
+    # 使用 timm 库加载预训练的 swin_base_patch244_kinetics400 模型
+    video_model = timm.create_model('swin_base_patch244_kinetics400', pretrained=True)
+    # 为了保留时序信息，将全局池化层替换为 Identity
+    if hasattr(video_model, 'global_pool'):
+        video_model.global_pool = torch.nn.Identity()
+    video_model.to(device)
+    video_model.eval()
 
-        for images, labels in tqdm(dataloader_train, desc="Processing"):
-            images, labels = images.to(device), labels.to(device)
-            # 将原始标签转换为连续标签（例如原始标签 [0,1,2,4,5,6] 映射为 [0,1,2,3,4,5]）
-            mapped_labels = map_labels(labels, label_map)
-            # 断言映射后的标签在合法范围内
-            assert torch.all((mapped_labels >= 0) & (mapped_labels < num_labels)), f"发现超出范围的标签：{mapped_labels}"
-            
-            optimizer.zero_grad()
-            outputs = model(images).logits
-            features = pooled_representation["features"]
+    # ===================== 设置特征保存目录 =====================
+    output_dir = "/media/data1/ningtong/wzh/projects/Face-VII/features"
+    os.makedirs(output_dir, exist_ok=True)
 
-            if use_variance:
-                if use_schedule:
-                    loss, ldist, lreg, ce_loss, _ = scheduled_variance_aware_loss(
-                        features, outputs, mapped_labels, current_epoch=epoch, total_epochs=num_epochs,
-                        lambda_reg=0.05, lambda_cls=1.0
-                    )
-                else:
-                    loss, ldist, lreg, ce_loss = variance_aware_loss_from_batch(
-                        features, outputs, mapped_labels, lambda_reg=0.05, lambda_cls=1.0
-                    )
-                total_ldist += ldist.item()
-                total_lreg += lreg.item()
-                total_ce_loss += ce_loss.item()
-            elif evi:
-                # for evidential
-                evidence = evi_head(features)
-                loss = evidential_loss_from_batch(evidence, mapped_labels)
-            else:
-                loss = nn.CrossEntropyLoss()(outputs, mapped_labels)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+    sample_index = 0  # 用于保存文件时的编号
 
-            if evi:
-                evidence = evi_head(features)
-                alpha = evidence + 1
-                probs = alpha / alpha.sum(dim=1, keepdim=True)
-                predicted = probs.argmax(dim=1)
-            else:
-                _, predicted = torch.max(outputs, 1)
-            
-            correct += (predicted == mapped_labels).sum().item()
-            total += mapped_labels.size(0)
-        epoch_train_loss = total_loss / len(dataloader_train)
-        epoch_train_acc = 100 * correct / total
-        train_loss_list.append(epoch_train_loss)
-        train_acc_list.append(epoch_train_acc)
+    # ===================== 遍历训练数据，提取特征 =====================
+    for data, label, info in tqdm(train_loader, desc="Extracting features"):
+        # --------------------- 音频特征提取 ---------------------
+        audio_waveform = data['audio']  # 形状 (batch, channels, time)
+        # 如果存在多个通道，则取均值；否则 squeeze 去掉 channel 维度
+        if audio_waveform.shape[1] > 1:
+            audio_waveform = torch.mean(audio_waveform, dim=1)
+        else:
+            audio_waveform = audio_waveform.squeeze(1)  # shape: (batch, time)
 
-        print(f"\nEpoch [{epoch + 1}/{num_epochs}]: Train Loss: {epoch_train_loss:.4f}, Accuracy: {epoch_train_acc:.2f}%")
-        writer.add_scalar("Loss/total", epoch_train_loss, epoch)
-
-        if use_variance:
-            print(f"Loss_ldist: {total_ldist / len(dataloader_train):.4f}, "
-                  f"Loss_lreg: {total_lreg / len(dataloader_train):.4f}, "
-                  f"Loss_ce_loss: {total_ce_loss / len(dataloader_train):.4f}")
-            writer.add_scalar("Loss/ldist", total_ldist / len(dataloader_train), epoch)
-            writer.add_scalar("Loss/lreg", total_lreg / len(dataloader_train), epoch)
-            writer.add_scalar("Loss/ce_loss", total_ce_loss / len(dataloader_train), epoch)
-
-        # evaluation
-        if (epoch + 1) % eval_gap_epoch == 0:
-            model.eval()
-
-            # for edl head if in evi mode
-            if evi_head:
-                evi_head.eval()
-            
-            test_correct = 0
-            test_loss = 0
-            test_total = 0
-            test_ldist = 0
-            test_lreg = 0
-            test_ce_loss = 0
+        audio_features_list = []
+        for waveform in audio_waveform:
+            # 使用 Wav2Vec2 特征提取器预处理音频，转换为模型输入格式
+            inputs = audio_processor(waveform.cpu().numpy(), sampling_rate=16000, return_tensors="pt")
+            # 将输入移至设备
+            inputs = {k: v.to(device) for k, v in inputs.items()}
             with torch.no_grad():
-                for images, labels in dataloader_eval:
-                    images, labels = images.to(device), labels.to(device)
-                    mapped_labels = map_labels(labels, label_map)
-                    assert torch.all((mapped_labels >= 0) & (mapped_labels < num_labels)), f"Eval中发现超出范围的标签：{mapped_labels}"
-                    
-                    outputs = model(images).logits
-                    features = pooled_representation["features"]
-                    if use_variance:
-                        if use_schedule:
-                            losses = scheduled_variance_aware_loss(
-                                features, outputs, mapped_labels, current_epoch=epoch, total_epochs=num_epochs,
-                                lambda_reg=0.05, lambda_cls=1.0
-                            )
-                            test_loss += losses[0].item()
-                            test_ldist += losses[1].item()
-                            test_lreg += losses[2].item()
-                            test_ce_loss += losses[3].item()
-                        else:
-                            losses = variance_aware_loss_from_batch(
-                                features, outputs, mapped_labels, lambda_reg=0.05, lambda_cls=1.0
-                            )
-                            test_loss += losses[0].item()
-                            test_ldist += losses[1].item()
-                            test_lreg += losses[2].item()
-                            test_ce_loss += losses[3].item()
-                    elif evi:
-                        evidence = evi_head(features)
-                        loss = evidential_loss_from_batch(evidence, mapped_labels)
-                        test_loss += loss.item()
-                    else:
-                        test_loss += nn.CrossEntropyLoss()(outputs, mapped_labels).item()
+                outputs = audio_model(**inputs)
+            # outputs.last_hidden_state 的形状为 (1, sequence_length, 768)
+            # 对时间维度进行平均池化，得到 768 维向量（音频全局特征）
+            feat = outputs.last_hidden_state.mean(dim=1).squeeze(0)
+            audio_features_list.append(feat.cpu())
+        # 最终音频特征的形状为 (batch, 768)
+        audio_features = torch.stack(audio_features_list)
 
-                    # for evi use edl head instead of Swin built-in logits
-                    if evi:
-                        evidence = evi_head(features)
-                        alpha = evidence + 1
-                        probs = alpha / alpha.sum(dim=1, keepdim=True)
-                        predicted = probs.argmax(dim=1)
-                    else:
-                        _, predicted = torch.max(outputs, 1)
+        # --------------------- 视频特征提取 ---------------------
+        # 原始形状为 (batch, num_frames, C, H, W)，转换为 (batch, C, T, H, W)
+        video_tensor = data['video'].permute(0, 2, 1, 3, 4).to(device)
+        with torch.no_grad():
+            video_feats = video_model.forward_features(video_tensor)
+            video_features = video_feats
 
-                    test_correct += (predicted == mapped_labels).sum().item()
-                    test_total += mapped_labels.size(0)
+        # --------------------- 标签映射及逆映射 ---------------------
+        # 先将原始标签映射为连续数值（仅对 known 标签生效），再通过逆映射恢复到原始 known 标签
+        mapped_labels = map_labels(label, label_map)
+        # 对 mapped_labels 进行逆映射（恢复成原始的 known 标签）
+        inversed_labels = torch.tensor(
+            [inv_label_map[int(x)] for x in mapped_labels.cpu().tolist()],
+            dtype=torch.long,
+            device=mapped_labels.device
+        )
 
-            epoch_val_loss = test_loss / len(dataloader_eval)
-            epoch_val_acc = 100 * test_correct / test_total
-            val_loss_list.append(epoch_val_loss)
-            val_acc_list.append(epoch_val_acc)
-            print(f"\nEvaluation after Epoch {epoch + 1}: Eval Loss: {epoch_val_loss:.4f}, Accuracy: {epoch_val_acc:.2f}%")
-            writer.add_scalar("Loss/total_eval", epoch_val_loss, epoch)
-            if use_variance:
-                print(f"Loss_ldist: {test_ldist / len(dataloader_eval):.4f}, "
-                      f"Loss_lreg: {test_lreg / len(dataloader_eval):.4f}, "
-                      f"Loss_ce_loss: {test_ce_loss / len(dataloader_eval):.4f}\n")
-                writer.add_scalar("Loss/ldist_eval", test_ldist / len(dataloader_eval), epoch)
-                writer.add_scalar("Loss/lreg_eval", test_lreg / len(dataloader_eval), epoch)
-                writer.add_scalar("Loss/ce_loss_eval", test_ce_loss / len(dataloader_eval), epoch)
+        # --------------------- 保存特征 ---------------------
+        # 此处只保存经过逆映射后的 label
+        batch_size = audio_features.shape[0]
+        for i in range(batch_size):
+            feature_dict = {
+                "audio_feature": audio_features[i],   # 768 维音频特征
+                "video_feature": video_features[i],     # 视频中间层特征（包含时序信息）
+                "label": inversed_labels[i]             # 经过逆映射后的 label，用于分类
+            }
+            save_path = os.path.join(output_dir, f"sample_{sample_index}.pt")
+            torch.save(feature_dict, save_path)
+            sample_index += 1
 
-        if (epoch + 1) % save_weights_gap_epoch == 0 and epoch + 1 < num_epochs:
-            option = ""
-            if use_variance:
-                if use_schedule:
-                    option = "_variance_schedule"
-                else:
-                    option = "_variance"
-            elif evi:
-                option = "_evidential"
-            
-            # for evidential mode, also save the evidential head
-            if evi:
-                torch.save({
-                    'model_state_dict': model.state_dict(),
-                    'evi_head_state_dict': evi_head.state_dict()
-                }, os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
-            else:
-                torch.save(model.state_dict(), os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_epoch_" + str(epoch) + option + ".pth"))
-
-    option = ""
-    if use_variance:
-        if use_schedule:
-            option = "_variance_schedule"
-        else:
-            option = "_variance"
-    elif evi:
-        if use_bn:
-            option = "_evidential_bn"
-        else:
-            option = "_evidential"
-
-    # again, for evidential mode, also save the evidential head
-    if evi:
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'evi_head_state_dict': evi_head.state_dict()
-        }, os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
-    else:
-        torch.save(model.state_dict(), os.path.join(save_weight_dir, "swin_tiny_rafdb_" + date_time_str + "_final" + option + ".pth"))
-
-    
-    # plot_dir = "/media/data1/ningtong/wzh/projects/Face-VII/plot"
-    # again, to run on colab
-    plot_dir = "./plot"
-
-    if not os.path.exists(plot_dir):
-        os.makedirs(plot_dir)
-    
-    plt.figure()
-    epochs_range = range(1, num_epochs + 1)
-    plt.plot(epochs_range, train_loss_list, label="Train Loss")
-    plt.plot(epochs_range, val_loss_list, label="Validation Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Loss over Epochs")
-    plt.legend()
-    plt.savefig(os.path.join(plot_dir, "loss_plot.png"))
-    plt.close()
-    
-    plt.figure()
-    plt.plot(epochs_range, train_acc_list, label="Train Accuracy")
-    plt.plot(epochs_range, val_acc_list, label="Validation Accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy (%)")
-    plt.title("Accuracy over Epochs")
-    plt.legend()
-    plt.savefig(os.path.join(plot_dir, "accuracy_plot.png"))
-    plt.close()
-    
-    writer.close()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="基于组合划分进行标签映射及逆映射的特征提取器")
+    parser.add_argument('--combination', type=int, required=True,
+                        help="用于标签映射的组合编号（1-10）")
+    args = parser.parse_args()
+    main(args)
