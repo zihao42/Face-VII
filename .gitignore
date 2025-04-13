@@ -4,3 +4,5 @@
 /__pycache__
 /RAF-DB
 /runs
+/weights
+.DS_Store

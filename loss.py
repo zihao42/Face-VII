@@ -1,45 +1,108 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-
-def variance_aware_loss_from_batch(z, logits, labels, lambda_reg=0.05, lambda_cls=1.0):
-    """
-    参数：
-      z: Tensor, shape (B, 768) - 当前批次的特征向量
-      logits: Tensor, shape (B, K) - 闭集分类输出，用于计算交叉熵损失
-      labels: Tensor, shape (B,) - 真实标签，取值范围为 0 ~ (K-1)
-      lambda_reg: 正则化损失的平衡系数
-      lambda_cls: 分类损失的平衡系数
-    返回：
-      loss: 总损失
-      Ldist, Lreg, Lcls: 各部分损失（便于调试）
-    """
-    eps = 1e-6  # 防止除 0
+def variance_aware_loss_from_batch(z, logits, labels, lambda_reg=0.02, lambda_cls=1.0):
+    eps = 1e-6
+    min_var = 1e-1  # 防止方差过小
     unique_labels = labels.unique()
 
-    # 用字典存储当前批次中每个类别的统计量
+    # 计算每个类别的均值和方差，并对方差下界截断
     class_stats = {}
     for cl in unique_labels:
         cl_mask = (labels == cl)
-        z_cl = z[cl_mask]  # 当前类别的所有特征，形状 (N_cl, 768)
-        mu_cl = z_cl.mean(dim=0)  # 均值，形状 (768,)
-        var_cl = z_cl.var(dim=0, unbiased=False) + eps  # 方差，形状 (768,)
+        z_cl = z[cl_mask]
+        mu_cl = z_cl.mean(dim=0)
+        var_cl = torch.clamp(z_cl.var(dim=0, unbiased=False) + eps, min=min_var)
         class_stats[int(cl.item())] = (mu_cl, var_cl)
-
-    # 对每个样本，查找其所属类别的统计量
-    mu_batch = torch.stack([class_stats[int(lbl.item())][0] for lbl in labels], dim=0)  # (B, 768)
-    var_batch = torch.stack([class_stats[int(lbl.item())][1] for lbl in labels], dim=0)  # (B, 768)
-
-    # 计算 Ldist: 对角协方差下的马氏距离（忽略常数项）
+    
+    # 为每个样本收集所属类别的统计量
+    mu_batch = torch.stack([class_stats[int(lbl.item())][0] for lbl in labels], dim=0)
+    var_batch = torch.stack([class_stats[int(lbl.item())][1] for lbl in labels], dim=0)
+    
+    # 计算马氏距离损失
     diff = z - mu_batch
     Ldist = 0.5 * torch.sum(diff * diff / var_batch, dim=1).mean()
-
-    # 计算 Lreg: 每个样本对数行列式（对角矩阵时等于各维度 log(var) 的和）
-    Lreg = 0.5 * torch.sum(torch.log(var_batch), dim=1).mean()
-
-    # 计算闭集分类损失 Lcls (交叉熵)
+    
+    # 新的正则化项：当 var < 1 时，惩罚 -log(var)；当 var >= 1 时，无惩罚
+    Lreg = torch.mean(torch.relu(-torch.log(var_batch)))
+    
+    # 交叉熵分类损失
     ce_loss = nn.CrossEntropyLoss()(logits, labels)
-
-    # 联合总损失(Ldist是马氏距离损失，Lreg是方差损失，ce_loss是分类损失（交叉熵））
+    
+    # 总损失
     loss = Ldist + lambda_reg * Lreg + lambda_cls * ce_loss
     return loss, Ldist, Lreg, ce_loss
+
+def scheduled_variance_aware_loss(z, logits, labels, current_epoch, total_epochs, lambda_reg=0.02, lambda_cls=1.0):
+    eps = 1e-6
+    min_var = 1e-1
+    unique_labels = labels.unique()
+    
+    class_stats = {}
+    for cl in unique_labels:
+        cl_mask = (labels == cl)
+        z_cl = z[cl_mask]
+        mu_cl = z_cl.mean(dim=0)
+        var_cl = torch.clamp(z_cl.var(dim=0, unbiased=False) + eps, min=min_var)
+        class_stats[int(cl.item())] = (mu_cl, var_cl)
+    
+    mu_batch = torch.stack([class_stats[int(lbl.item())][0] for lbl in labels], dim=0)
+    var_batch = torch.stack([class_stats[int(lbl.item())][1] for lbl in labels], dim=0)
+    
+    diff = z - mu_batch
+    Ldist = 0.5 * torch.sum(diff * diff / var_batch, dim=1).mean()
+    
+    # 使用 hinge 方式的正则化：只惩罚 var < 1
+    Lreg = torch.mean(torch.relu(-torch.log(var_batch)))
+    
+    ce_loss = nn.CrossEntropyLoss()(logits, labels)
+    
+    # 调度因子：前半程仅用分类损失，后半程采用二次 ramp-up 平滑引入 Ldist 和 Lreg
+    half_epoch = total_epochs / 2.0
+    if current_epoch < half_epoch:
+        alpha = 0.0
+    else:
+        linear_alpha = (current_epoch - half_epoch) / half_epoch
+        alpha = min(linear_alpha**2, 1.0)
+    
+    loss = lambda_cls * ce_loss + alpha * (Ldist + lambda_reg * Lreg)
+    return loss, Ldist, Lreg, ce_loss, alpha
+
+
+# define function for EDL loss
+def evidential_loss_from_batch(evidence, labels):
+    """
+    Negative Log-Likelihood (NLL) style EDL loss:
+      sum_{k=1 to K}[ y_k * ( log( sum_j alpha_j ) - log(alpha_k) ) ]
+    Returns:
+      total_loss
+    """
+    alpha = evidence + 1.0  # alpha_k = e_k + 1
+    alpha0 = alpha.sum(dim=1, keepdim=True)  # sum of all alpha_k for each sample
+
+    K = alpha.shape[1]
+    # Convert integer labels -> one-hot
+    y_onehot = F.one_hot(labels, num_classes=K).float()
+
+    # EDL NLL: \sum_k [ y_k * ( log(\sum_j alpha_j) - log(alpha_k) ) ]
+    log_sum_alpha = torch.log(alpha0)
+    log_alpha = torch.log(alpha)
+
+    per_sample_loss = torch.sum(y_onehot * (log_sum_alpha - log_alpha), dim=1)
+    loss = per_sample_loss.mean()
+    return loss
+
+# for evidential uncertainty from Dirichlet
+def compute_evidential_unknown_score(evidence):
+    """
+    Optional helper if you want an 'unknown score' akin to 'compute_unknown_score' 
+    in the variance-based approach. 
+    Score = predictive uncertainty = K / sum(alpha_k).
+    """
+    alpha = evidence + 1.0
+    alpha0 = alpha.sum(dim=1)   # shape (B,)
+    K = alpha.shape[1]
+    # The higher this is, the more uncertain => more likely unknown
+    unknown_score = K / alpha0  # shape (B,)
+    return unknown_score
