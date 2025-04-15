@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import torch
+import torch.nn as nn
+
 from transformers import Wav2Vec2Model
 
 def load_audio_backbone(weights: str, device: torch.device) -> Wav2Vec2Model:
@@ -27,44 +29,25 @@ def load_audio_backbone(weights: str, device: torch.device) -> Wav2Vec2Model:
     backbone.eval()
     return backbone
 
-def extract_audio_features(audio_batch: torch.Tensor, backbone: Wav2Vec2Model) -> torch.Tensor:
+def extract_audio_features(audio_batch: torch.Tensor, backbone: Wav2Vec2Model, target_frames: int) -> torch.Tensor:
     """
-    利用音频 backbone 提取特征，并将输出的时间步长按照 target_frames 划分、池化，实现与视频特征的对齐。
-    
-    输入:
-        audio_batch: 音频数据张量，形状为 [batch_size, num_samples]，
-                     例如，batch size = 4，num_samples 根据采样率和时长确定。
-        backbone: 已加载权重的 Wav2Vec2 backbone 模型。
-        target_frames: 目标帧数 T，应与视频特征提取中视频的帧数一致（例如 32），
-                       → **重要：必须与视频端的参数对齐，否则后续多模态融合会出错。**
-                       
-    处理流程:
-        1. 将 audio_batch 输入 backbone，获得输出 last_hidden_state，形状为 [B, L, hidden_dim]，
-           其中 B 为批次大小，L 为 backbone 经过下采样后的时间步数。
-        2. 检查 L 是否能被 target_frames 整除，如不满足请检查音频预处理或采样率设定。
-        3. 计算每个目标帧对应的 token 数：chunk_size = L // target_frames。
-        4. 将 last_hidden_state 重塑为形状 [B, target_frames, chunk_size, hidden_dim]，再在 chunk_size 维度上取平均，
-           得到形状为 [B, target_frames, hidden_dim] 的对齐特征。
-    
+    利用音频 backbone 提取特征，并自适应池化到 target_frames 个时间步，
+    返回对齐后的特征，形状为 [B, target_frames, hidden_dim]。
+
+    参数:
+        audio_batch: 输入音频，形状为 [B, num_samples]（或 [B, 1, num_samples]）
+        backbone: 加载了预训练权重的 Wav2Vec2 模型
+        target_frames: 目标时间步数（应与视频特征一致，如 32 或 16）
+
     返回:
-        aligned_features: 对齐后的音频特征张量，形状为 [batch_size, target_frames, hidden_dim]。
+        aligned_features: 对齐后的音频特征张量，形状为 [B, target_frames, hidden_dim]
     """
     outputs = backbone(audio_batch)
     last_hidden = outputs.last_hidden_state  # shape: [B, L, hidden_dim]
-    B, L, hidden_dim = last_hidden.shape
-    target_frames = audio_batch.shape[1]
-
-    # 确保 L 能被 target_frames 整除
-    if L % target_frames != 0:
-        raise ValueError(
-            f"音频输出的 token 数 L={L} 不能被目标帧数 target_frames={target_frames} 整除。"
-            "请检查音频预处理或调整采样率。"
-        )
-
-    # 计算每个目标帧对应的 token 数（chunk_size）
-    chunk_size = L // target_frames
-    # 重塑为 [B, target_frames, chunk_size, hidden_dim] 后，沿 chunk_size 维度取平均获得对齐特征
-    aligned_features = last_hidden.reshape(B, target_frames, chunk_size, hidden_dim).mean(dim=2)
+    # 将 last_hidden 转置为 (B, hidden_dim, L)，方便自适应池化
+    hidden_states_t = last_hidden.transpose(1, 2)  # shape: [B, hidden_dim, L]
+    aligned_features = nn.functional.adaptive_avg_pool1d(hidden_states_t, target_frames)
+    aligned_features = aligned_features.transpose(1, 2)  # shape: [B, target_frames, hidden_dim]
     return aligned_features
 
 # -------------------------------------------------------------------
