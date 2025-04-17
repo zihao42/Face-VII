@@ -231,52 +231,59 @@ class RAVDESSOpenSetDataset(Dataset):
         return sample, lab
 
 #############################
-# DataLoader builder: uses existing CSV
+# DataLoader builder: custom splits
 #############################
 def get_openset_dataloaders(data_dir, csv_dir,
                             combination, modality='both',
                             batch_size=4, num_frames=32,
                             video_transform=None, audio_transform=None,
-                            target_sample_rate=16000, num_workers=4,
-                            train_eval_split=0.8):
+                            target_sample_rate=16000, num_workers=4):
     """
-    Load CSV multimodal-{combination}.csv from csv_dir and build dataloaders.
+    Train loader: all category=='train'.
+    Val loader: all category=='test' & emo_label != 8.
+    Test loader: union of val set and all emo_label == 8.
     """
     csv_path = os.path.join(csv_dir, f"multimodal-{combination}.csv")
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"CSV not found: {csv_path}")
 
     df = pd.read_csv(csv_path)
-    train_df = df[df.category=='train'].sample(frac=1).reset_index(drop=True)
-    test_df  = df[df.category=='test'].reset_index(drop=True)
+    # Train: all 'train'
+    train_df = df[df.category == 'train'].reset_index(drop=True)
+    # Val: test-known
+    val_df   = df[(df.category == 'test') & (df.emo_label != 8)].reset_index(drop=True)
+    # Unknown
+    unk_df   = df[(df.category == 'test') & (df.emo_label == 8)].reset_index(drop=True)
+    # Test: val + unknown
+    test_df  = pd.concat([val_df, unk_df]).reset_index(drop=True)
 
-    cut = int(train_eval_split * len(train_df))
-    df_tr, df_val = train_df.iloc[:cut], train_df.iloc[cut:]
-
+    # Build datasets
     train_ds = RAVDESSOpenSetDataset(data_dir,
-                                    df_tr.video_filename.tolist(),
-                                    df_tr.audio_filename.tolist(),
-                                    df_tr.emo_label.tolist(),
+                                    train_df.video_filename.tolist(),
+                                    train_df.audio_filename.tolist(),
+                                    train_df.emo_label.tolist(),
                                     modality, num_frames,
                                     video_transform, audio_transform,
                                     target_sample_rate)
-    val_ds = RAVDESSOpenSetDataset(data_dir,
-                                  df_val.video_filename.tolist(),
-                                  df_val.audio_filename.tolist(),
-                                  df_val.emo_label.tolist(),
-                                  modality, num_frames,
-                                  video_transform, audio_transform,
-                                  target_sample_rate)
-    test_ds = RAVDESSOpenSetDataset(data_dir,
-                                   test_df.video_filename.tolist(),
-                                   test_df.audio_filename.tolist(),
-                                   test_df.emo_label.tolist(),
-                                   modality, num_frames,
-                                   video_transform, audio_transform,
-                                   target_sample_rate)
+    val_ds   = RAVDESSOpenSetDataset(data_dir,
+                                    val_df.video_filename.tolist(),
+                                    val_df.audio_filename.tolist(),
+                                    val_df.emo_label.tolist(),
+                                    modality, num_frames,
+                                    video_transform, audio_transform,
+                                    target_sample_rate)
+    test_ds  = RAVDESSOpenSetDataset(data_dir,
+                                    test_df.video_filename.tolist(),
+                                    test_df.audio_filename.tolist(),
+                                    test_df.emo_label.tolist(),
+                                    modality, num_frames,
+                                    video_transform, audio_transform,
+                                    target_sample_rate)
 
-    collate = collate_fn_audio if modality=='audio' else None
+    # Collate only for audio
+    collate = collate_fn_audio if modality == 'audio' else None
 
+    # Default video transform if none
     if video_transform is None:
         video_transform = transforms.Compose([
             transforms.Resize((224,224)),
