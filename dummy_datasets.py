@@ -4,7 +4,7 @@ import random
 
 
 class DummyTimeSformerDataset(Dataset):
-    def __init__(self, num_samples=100, num_classes=5, C=3, T=16, H=224, W=224):
+    def __init__(self, num_samples=100, num_classes=5, C=3, T=32, H=224, W=224):
         self.num_samples = num_samples
         self.num_classes = num_classes
         self.C = C

@@ -18,12 +18,12 @@ from tqdm import tqdm
 from transformers import TimesformerModel
 
 # ===================== 视频帧采样和预处理函数 =====================
-def load_video_frames(video_path, num_frames=16, transform=None):
+def load_video_frames(video_path, num_frames=32, transform=None):
     """
     读取视频文件并均匀采样 num_frames 帧
     参数：
         video_path: 视频文件路径
-        num_frames: 采样帧数（默认16帧）
+        num_frames: 采样帧数（默认32帧）
         transform: 对 PIL 图像进行的预处理变换
     返回：
         Tensor，形状为 (num_frames, C, H, W)
@@ -59,13 +59,13 @@ def load_video_frames(video_path, num_frames=16, transform=None):
 
 # ===================== 自定义视频数据集 =====================
 class VideoDataset(Dataset):
-    def __init__(self, csv_file, video_dir, num_frames=16, transform=None):
+    def __init__(self, csv_file, video_dir, num_frames=32, transform=None):
         """
         初始化视频数据集
         参数：
             csv_file: CSV 文件路径，包含 "filename", "category", "emo_label" 三列
             video_dir: 视频文件所在目录
-            num_frames: 采样帧数（默认16帧）
+            num_frames: 采样帧数（默认32帧）
             transform: 视频帧预处理的变换
         """
         self.video_dir = video_dir
