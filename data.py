@@ -131,11 +131,12 @@ def get_file_list(data_dir, allowed_modalities=None):
     return fl
 
 #############################
-# CSV Gen: video, audio, category, emo_label
+# CSV Generation: standalone function
 #############################
-def generate_openset_csv(data_dir, combination, output_csv, allowed_modalities=None):
+def generate_openset_csv(data_dir, combination, csv_dir, allowed_modalities={"02","03"}):
     """
     Generate CSV with columns: video_filename, audio_filename, category, emo_label
+    and save to csv_dir as multimodal-{combination}.csv
     """
     combo = COMBINATION_SPLITS.get(combination)
     if not combo:
@@ -143,56 +144,46 @@ def generate_openset_csv(data_dir, combination, output_csv, allowed_modalities=N
     known, unknown = combo['known'], combo['unknown']
 
     files = get_file_list(data_dir, allowed_modalities)
-    # map utt_id -> emotion
     utt2emo = {}
     for f in files:
         info = parse_ravdess_info(f)
         u = os.path.splitext(f)[0].split('-',1)[1]
         utt2emo[u] = info['emotion']
 
-    # keep only utts with both modalities
     valid = []
     for u, emo in utt2emo.items():
         v = f"02-{u}.mp4"; a = f"03-{u}.wav"
-        if os.path.exists(os.path.join(data_dir, v)) and \
-           os.path.exists(os.path.join(data_dir, a)):
+        if os.path.exists(os.path.join(data_dir, v)) and os.path.exists(os.path.join(data_dir, a)):
             valid.append(u)
 
-    # split known vs unknown
     k_utts = [u for u in valid if utt2emo[u] in known]
     un_utts= [u for u in valid if utt2emo[u] in unknown]
     random.shuffle(k_utts)
     n_train = int((6/7)*len(k_utts))
     train_k, test_k = k_utts[:n_train], k_utts[n_train:]
+
     rows = []
-
     for u in train_k:
-        rows.append({
-            'video_filename': f"02-{u}.mp4",
-            'audio_filename': f"03-{u}.wav",
-            'category': 'train',
-            'emo_label': utt2emo[u]
-        })
+        rows.append({'video_filename': f"02-{u}.mp4",
+                     'audio_filename': f"03-{u}.wav",
+                     'category': 'train',
+                     'emo_label': utt2emo[u]})
     for u in test_k:
-        rows.append({
-            'video_filename': f"02-{u}.mp4",
-            'audio_filename': f"03-{u}.wav",
-            'category': 'test',
-            'emo_label': utt2emo[u]
-        })
+        rows.append({'video_filename': f"02-{u}.mp4",
+                     'audio_filename': f"03-{u}.wav",
+                     'category': 'test',
+                     'emo_label': utt2emo[u]})
     for u in un_utts:
-        rows.append({
-            'video_filename': f"02-{u}.mp4",
-            'audio_filename': f"03-{u}.wav",
-            'category': 'test',
-            'emo_label': 8
-        })
+        rows.append({'video_filename': f"02-{u}.mp4",
+                     'audio_filename': f"03-{u}.wav",
+                     'category': 'test',
+                     'emo_label': 8})
 
-    df = pd.DataFrame(rows, columns=[
-        'video_filename','audio_filename','category','emo_label'
-    ])
-    df.to_csv(output_csv, index=False)
-    print(f"CSV generated: {len(rows)} rows → {output_csv}")
+    df = pd.DataFrame(rows, columns=['video_filename','audio_filename','category','emo_label'])
+    os.makedirs(csv_dir, exist_ok=True)
+    csv_path = os.path.join(csv_dir, f"multimodal-{combination}.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"CSV generated: {len(rows)} rows → {csv_path}")
 
 #############################
 # Paired Dataset
@@ -216,90 +207,73 @@ class RAVDESSOpenSetDataset(Dataset):
         return len(self.vfiles)
 
     def __getitem__(self, idx):
-        sample = {}
-        lab = self.labels[idx]
-
+        sample, lab = {}, self.labels[idx]
         if self.modality in ['video','both']:
-            vf = self.vfiles[idx]
             sample['video'] = load_video_frames(
-                os.path.join(self.data_dir, vf),
+                os.path.join(self.data_dir, self.vfiles[idx]),
                 num_frames=self.num_frames,
-                transform=self.vt
-            )
+                transform=self.vt)
         if self.modality in ['audio','both']:
-            af = self.afiles[idx]
-            wv = load_audio_file(os.path.join(self.data_dir, af), self.sr)
+            wv = load_audio_file(
+                os.path.join(self.data_dir, self.afiles[idx]), self.sr)
             if wv.size(0)>1:
                 wv = wv.mean(dim=0, keepdim=True)
             total = wv.size(1)
             fl = total // self.num_frames
-            if fl==0:
+            if fl == 0:
                 raise ValueError("Audio too short")
-            desired = fl*self.num_frames
-            wv = (wv if total>=desired else nn.functional.pad(wv,(0,desired-total)))[:,:desired]
-            wv = wv.view(1,self.num_frames,fl).squeeze(0)
+            desired = fl * self.num_frames
+            wv = (wv if total>=desired else nn.functional.pad(wv, (0, desired-total)))[:, :desired]
+            wv = wv.view(1, self.num_frames, fl).squeeze(0)
             if self.at:
                 wv = torch.stack([self.at(x) for x in wv])
             sample['audio'] = wv
-
         return sample, lab
 
 #############################
-# DataLoader builder
+# DataLoader builder: uses existing CSV
 #############################
-def get_openset_dataloaders(data_dir, combination, output_csv_dir,
-                            modality='both', batch_size=4, num_frames=32,
+def get_openset_dataloaders(data_dir, csv_dir,
+                            combination, modality='both',
+                            batch_size=4, num_frames=32,
                             video_transform=None, audio_transform=None,
                             target_sample_rate=16000, num_workers=4,
-                            train_eval_split=0.8,
-                            train_allowed_modalities={"02","03"}):
+                            train_eval_split=0.8):
     """
-    Generate paired video+audio dataloaders.
+    Load CSV multimodal-{combination}.csv from csv_dir and build dataloaders.
     """
-    os.makedirs(output_csv_dir, exist_ok=True)
-    csv_path = os.path.join(
-        output_csv_dir, f"multimodal-{combination}.csv"
-    )
-    generate_openset_csv(
-        data_dir, combination, csv_path,
-        allowed_modalities=train_allowed_modalities
-    )
+    csv_path = os.path.join(csv_dir, f"multimodal-{combination}.csv")
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
 
     df = pd.read_csv(csv_path)
     train_df = df[df.category=='train'].sample(frac=1).reset_index(drop=True)
     test_df  = df[df.category=='test'].reset_index(drop=True)
 
     cut = int(train_eval_split * len(train_df))
-    df_tr = train_df.iloc[:cut]
-    df_val= train_df.iloc[cut:]
+    df_tr, df_val = train_df.iloc[:cut], train_df.iloc[cut:]
 
-    train_ds = RAVDESSOpenSetDataset(
-        data_dir,
-        df_tr.video_filename.tolist(),
-        df_tr.audio_filename.tolist(),
-        df_tr.emo_label.tolist(),
-        modality, num_frames,
-        video_transform, audio_transform,
-        target_sample_rate
-    )
-    val_ds = RAVDESSOpenSetDataset(
-        data_dir,
-        df_val.video_filename.tolist(),
-        df_val.audio_filename.tolist(),
-        df_val.emo_label.tolist(),
-        modality, num_frames,
-        video_transform, audio_transform,
-        target_sample_rate
-    )
-    test_ds = RAVDESSOpenSetDataset(
-        data_dir,
-        test_df.video_filename.tolist(),
-        test_df.audio_filename.tolist(),
-        test_df.emo_label.tolist(),
-        modality, num_frames,
-        video_transform, audio_transform,
-        target_sample_rate
-    )
+    train_ds = RAVDESSOpenSetDataset(data_dir,
+                                    df_tr.video_filename.tolist(),
+                                    df_tr.audio_filename.tolist(),
+                                    df_tr.emo_label.tolist(),
+                                    modality, num_frames,
+                                    video_transform, audio_transform,
+                                    target_sample_rate)
+    val_ds = RAVDESSOpenSetDataset(data_dir,
+                                  df_val.video_filename.tolist(),
+                                  df_val.audio_filename.tolist(),
+                                  df_val.emo_label.tolist(),
+                                  modality, num_frames,
+                                  video_transform, audio_transform,
+                                  target_sample_rate)
+    test_ds = RAVDESSOpenSetDataset(data_dir,
+                                   test_df.video_filename.tolist(),
+                                   test_df.audio_filename.tolist(),
+                                   test_df.emo_label.tolist(),
+                                   modality, num_frames,
+                                   video_transform, audio_transform,
+                                   target_sample_rate)
 
     collate = collate_fn_audio if modality=='audio' else None
 
