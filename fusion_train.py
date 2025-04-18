@@ -16,6 +16,8 @@ from audio_feature_extract import extract_audio_features
 from visual_feature_extract import extract_frame_features
 from data import load_video_frames, load_audio_file
 from feature_fusion import MultimodalTransformer
+from enn_head import EvidentialClassificationHead
+from loss import evidential_loss_from_batch
 # reuse I/O helpers from data.py
 
 
@@ -85,7 +87,7 @@ def collate_fn_modality(batch):
 
 
 def train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, device,
-                       num_epochs=10, video_comb=1, audio_comb=1):
+                       num_epochs=10, video_comb=1, audio_comb=1, enn_head=None):
     train_losses, val_losses, train_accs, val_accs = [], [], [], []
     model.to(device)
     for epoch in range(num_epochs):
@@ -99,11 +101,22 @@ def train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, de
             with torch.no_grad():
                 feat_a = extract_audio_features(wavs, audio_comb, device=device)
                 feat_v = extract_frame_features(vids, video_comb, device=device)
-            logits, _ = model([feat_a, feat_v])
-            loss = criterion(logits, labels)
+            
+            if enn_head is not None:
+                # get fused features only if evi true in main()
+                fused_feat = model([feat_a, feat_v])
+                evidence = enn_head(fused_feat)
+                loss = evidential_loss_from_batch(evidence, labels)
+                alpha = evidence + 1.0
+                probs = alpha / alpha.sum(dim=1, keepdim=True)
+                preds = torch.argmax(probs, dim=1)
+            else:
+                logits, _ = model([feat_a, feat_v])
+                loss = criterion(logits, labels)
+                preds = torch.argmax(logits, dim=1)
+
             loss.backward()
-            optimizer.step()
-            preds = torch.argmax(logits, dim=1)
+            optimizer.step()       
             total_loss += loss.item() * labels.size(0)
             total_correct += (preds == labels).sum().item()
             total_samples += labels.size(0)
@@ -119,9 +132,18 @@ def train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, de
                 wavs, vids, labels = wavs.to(device), vids.to(device), labels.to(device)
                 feat_a = extract_audio_features(wavs, audio_comb, device=device)
                 feat_v = extract_frame_features(vids, video_comb, device=device)
-                logits, _ = model([feat_a, feat_v])
-                loss = criterion(logits, labels)
-                preds = torch.argmax(logits, dim=1)
+                if enn_head is not None:
+                    fused_feat = model([feat_a, feat_v])
+                    evidence = enn_head(fused_feat)
+                    loss = evidential_loss_from_batch(evidence, labels)
+                    alpha = evidence + 1.0
+                    probs = alpha / alpha.sum(dim=1, keepdim=True)
+                    preds = torch.argmax(probs, dim=1)
+                else:          
+                    logits, _ = model([feat_a, feat_v])
+                    loss = criterion(logits, labels)
+                    preds = torch.argmax(logits, dim=1)
+
                 val_loss += loss.item() * labels.size(0)
                 val_correct += (preds == labels).sum().item()
                 val_samples += labels.size(0)
@@ -149,6 +171,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-6)
     parser.add_argument("--num_frames", type=int, default=32,
                         help="Number of frames sampled per video")
+    # evidential mode flag
+    parser.add_argument("--evi", action="store_true", help="use evidential head & loss")
     args = parser.parse_args()
 
     # read CSV to determine classes
@@ -168,20 +192,39 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device {device}, sampling {args.num_frames} frames/video")
 
-    model = MultimodalTransformer(modality_num=2, num_classes=num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    # feature only when evi mode
+    model = MultimodalTransformer(modality_num=2, num_classes=num_classes, feature_only=args.evi).to(device)
+    
+    # if evidential mode --> create the ENN head
+    if args.evi:
+        enn_head = EvidentialClassificationHead(model.embed_dim * model.n_modality, num_classes, use_bn=True).to(device)
+        criterion = None
+        # optimizer covers both fusion params + enn_head
+        optimizer = torch.optim.AdamW(list(model.parameters()) + list(enn_head.parameters()), lr=args.lr)
+    else:
+        enn_head = None
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     trained_model, metrics = train_and_evaluate(
         model, train_loader, val_loader,
         criterion, optimizer, device,
         num_epochs=args.epochs,
-        video_comb=1, audio_comb=1
+        video_comb=1, audio_comb=1, enn_head=enn_head
     )
 
     os.makedirs(args.output_dir, exist_ok=True)
     weight_path = os.path.join(args.output_dir, f"{prefix}.pth")
-    torch.save(trained_model.state_dict(), weight_path)
+
+    # save model weights: again if evi --> save both fusion + enn_head
+    if args.evi:
+        torch.save({
+            "fusion_state_dict": trained_model.state_dict(),
+            "enn_head_state_dict": enn_head.state_dict()
+        }, weight_path)
+    else:
+        torch.save(trained_model.state_dict(), weight_path)
+
     print(f"Saved model weights to {weight_path}")
 
     # plot metrics

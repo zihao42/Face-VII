@@ -63,6 +63,8 @@ class MultimodalTransformer(nn.Module):
         super(MultimodalTransformer, self).__init__()
         self.feature_only = feature_only
         self.n_modality = modality_num
+        # add to expose embed_dim --> avoid magic number
+        self.embed_dim = embed_dim
 
         self.layers = nn.ParameterList([ModalFusionBlock(embed_dim, num_heads, n_modality=self.n_modality)
                                         for _ in range(num_layers)])
