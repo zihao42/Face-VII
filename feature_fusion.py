@@ -52,7 +52,8 @@ class ModalFusionBlock(nn.Module):
 
 
 class MultimodalTransformer(nn.Module):
-    def __init__(self, modality_num, num_classes, feature_only=False, embed_dim=768, num_heads=8, num_layers=3):
+    def __init__(self, modality_num, num_classes, feature_only=False, input_dim=768,
+                 embed_dim=128, num_heads=8, num_layers=1):
         """
         初始化 MultimodalTransformer，用于多模态融合。
         参数：
@@ -63,6 +64,12 @@ class MultimodalTransformer(nn.Module):
         super(MultimodalTransformer, self).__init__()
         self.feature_only = feature_only
         self.n_modality = modality_num
+        self.linear = nn.ParameterList(
+            [nn.Sequential(
+                nn.Linear(input_dim, embed_dim),
+                nn.ReLU()
+            ) for _ in range(self.n_modality)]
+        )
 
         self.layers = nn.ParameterList([ModalFusionBlock(embed_dim, num_heads, n_modality=self.n_modality)
                                         for _ in range(num_layers)])
@@ -84,6 +91,9 @@ class MultimodalTransformer(nn.Module):
         assert len(modal_data) == self.n_modality, \
             f"Mismatch of number of modality with data. " \
             f"Predefined number is {self.n_modality}, but get {len(modal_data)}"
+
+        for i in range(self.n_modality):
+            modal_data[i] = self.linear[i](modal_data[i])
 
         for layer in self.layers:
             modal_data = layer(modal_data)
