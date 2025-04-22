@@ -87,6 +87,8 @@ def train_and_evaluate(
     device: torch.device,
     num_epochs: int = 10,
     patience: int = 5,
+    lr_start: float = 1e-5,
+    lr_end: float = 1e-6,
     video_comb: int = 1,
     audio_comb: int = 1,
     weights_dir_visual: str = "weights/backbones/visual",
@@ -105,6 +107,13 @@ def train_and_evaluate(
     backbone_a = load_audio_backbone(a_path, device)
 
     model.to(device)
+    # 学习率退火 Cosine Annealing
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=num_epochs,
+        eta_min=lr_end
+    )
+
     # 早停相关
     best_val_loss = float('inf')
     wait = 0
@@ -123,7 +132,6 @@ def train_and_evaluate(
                 feat_v = extract_frame_features_from_backbone(vids, backbone_v)
                 feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
 
-            # 前向 + loss
             logits, z = model([feat_a, feat_v])
             loss_items = loss_fn(logits, z, labels, epoch)
             loss = loss_items[0]
@@ -175,6 +183,9 @@ def train_and_evaluate(
                 print(f"Early stopping at epoch {epoch+1}. Best epoch: {epoch+1-wait}.")
                 break
 
+        # 更新学习率
+        scheduler.step()
+
     # 恢复至最佳权重
     model.load_state_dict(best_model_wts)
     return model, {"train_losses": train_losses, "val_losses": val_losses,
@@ -198,7 +209,10 @@ def main():
                         help="最大训练 epoch 数")
     parser.add_argument("--patience", type=int, default=5,
                         help="Early stopping 耐心值（连续多少个 epoch 验证不提升后停止）")
-    parser.add_argument("--lr", type=float, default=1e-6)
+    parser.add_argument("--lr", type=float, default=2e-5,
+                        help="初始学习率（退火起始学习率）")
+    parser.add_argument("--lr_end", type=float, default=1e-6,
+                        help="退火结束时的最小学习率")
     parser.add_argument("--num_frames", type=int, default=32,
                         help="每段视频采样帧数")
     parser.add_argument("--video_comb", type=int, default=1,
@@ -286,12 +300,14 @@ def main():
                 lambda_cls=args.lambda_cls
             )
 
-    # 训练与验证，传入 patience 参数
+    # 训练与验证，传入退火相关与早停参数
     trained_model, metrics = train_and_evaluate(
         model, train_loader, val_loader,
         loss_fn, optimizer, device,
         num_epochs=args.epochs,
         patience=args.patience,
+        lr_start=args.lr,
+        lr_end=args.lr_end,
         video_comb=args.video_comb,
         audio_comb=args.audio_comb,
         weights_dir_visual=os.path.join(args.output_dir, "backbones", "visual"),
