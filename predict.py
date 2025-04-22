@@ -1,193 +1,113 @@
+# predict.py
 import argparse
-import os
 import torch
-from transformers import SwinForImageClassification, logging as hf_logging
+import torch.nn as nn
 import torchvision.transforms as transforms
+from data import COMBINATION_SPLITS, load_video_frames, load_audio_file
+from audio_feature_extract import load_audio_backbone, extract_audio_features
+from visual_feature_extract import load_timesformer_backbone, extract_video_features
 from PIL import Image
-import warnings
-from enn_head import EvidentialClassificationHead
 
-hf_logging.set_verbosity_error()
-warnings.filterwarnings("ignore", category=FutureWarning)
+# Emotion annotation mapping
+EMOTION_NAMES = {
+    0: "Neutral", 1: "Calm", 2: "Happy", 3: "Sad",
+    4: "Angry", 5: "Fearful", 6: "Disgust", 7: "Surprise"
+}
 
-def generate_label_map(uk):
-    """
-    根据 uk（unknown key）生成正向标签映射字典。
-    例如，如果 uk 为 "sur"，则会舍弃标签 0，其余标签 [1,2,3,4,5,6] 会映射为 0~5。
-    """
-    if uk == "sur":
-        chosen_label = 0
-    elif uk == "fea":
-        chosen_label = 1
-    elif uk == "dis":
-        chosen_label = 2
-    elif uk == "hap":
-        chosen_label = 3
-    elif uk == "sad":
-        chosen_label = 4
-    elif uk == "ang":
-        chosen_label = 5
-    elif uk == "neu":
-        chosen_label = 6
-    else:
-        chosen_label = None
-    
-    valid_labels = [i for i in range(7) if i != chosen_label]
-    label_map = {orig: new for new, orig in enumerate(sorted(valid_labels))}
-    return label_map
+def generate_label_map(combination: int):
+    combo = COMBINATION_SPLITS[combination]
+    known = sorted(combo['known'])
+    return {orig: idx for idx, orig in enumerate(known)}
 
-def extract_uk_from_weights(weights_path):
-    """
-    根据权重文件名，提取 uk（例如 "sur", "fea", ...）。
-    这里通过判断文件名中是否包含特定子字符串来实现。
-    """
-    uk_options = ["sur", "fea", "dis", "hap", "sad", "ang", "neu"]
-    for uk in uk_options:
-        if uk in os.path.basename(weights_path):
-            return uk
-    return None
+def inverse_label_map(label_map: dict):
+    return {v: k for k, v in label_map.items()}
 
-def load_image(image_input):
-    """
-    Loads an image and applies evaluation preprocessing.
-    
-    If the input is a tensor, it is assumed to be already preprocessed;
-    if it does not have a batch dimension, one is added.
-    
-    Otherwise, the image is loaded from the file path, resized to 224x224,
-    converted to a tensor, normalized using ImageNet statistics, and a batch
-    dimension is added.
-    """
-    transform_eval = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
-    ])
-    
-    if isinstance(image_input, torch.Tensor):
-        if image_input.ndim == 3:
-            return image_input.unsqueeze(0)
-        return image_input
-    else:
-        image = Image.open(image_input).convert("RGB")
-        return transform_eval(image).unsqueeze(0)
+def load_models(combination: int, video_weights: str,
+                audio_weights: str, classifier_weights: str):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    video_bb = load_timesformer_backbone(video_weights, device)
+    audio_bb = load_audio_backbone(audio_weights, device)
+    label_map = generate_label_map(combination)
+    inv_map = inverse_label_map(label_map)
+    num_known = len(label_map)
+    in_dim = video_bb.config.hidden_size + audio_bb.config.hidden_size
+    classifier = nn.Linear(in_dim, num_known)
+    classifier.load_state_dict(torch.load(classifier_weights, map_location=device))
+    classifier.to(device).eval()
+    return video_bb, audio_bb, classifier, label_map, inv_map, device
 
-def predict_image(weights, image, threshold=0.7, model=None, enn_head=None):
-    """
-    根据给定的 weights 加载模型，处理 image（可以是文件路径或 tensor），
-    返回预测类别及其注释信息：
-      - 若最大 softmax 概率低于 threshold，则预测为未知（类别 8）；
-      - 否则，将模型输出（经过逆映射后）转换为 1-indexed 的原始标签，并返回相应的情绪注释。
-
-    如果传入了预加载的 model（非 None），则直接使用该 model 进行预测，
-    从而避免重复加载模型，并确保输入 tensor 被移动到 model 所在设备上。
-    """
-    # 如果传入了预加载 model，则使用 model 所在设备，否则加载模型
-    if model is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model_name = "microsoft/swin-tiny-patch4-window7-224"
-        num_labels = 6
-        model = SwinForImageClassification.from_pretrained(
-            model_name,
-            ignore_mismatched_sizes=True,
-            num_labels=num_labels
-        )
-        state_dict = torch.load(weights, map_location=device)
-        # also load enn head if available
-        if 'evi_head_state_dict' in state_dict:
-            model.load_state_dict(state_dict['model_state_dict'])
-            # now default use_bn=True, will revise in later versions
-            enn_head = EvidentialClassificationHead(model.config.hidden_size, num_labels, use_bn=True) 
-            enn_head.load_state_dict(state_dict['evi_head_state_dict'])
-            enn_head.to(device)
-            enn_head.eval()
-        else: 
-            model.load_state_dict(state_dict)
-        model.to(device)
-        model.eval()
-    else:
-        device = next(model.parameters()).device
-
-    # 获取图像 tensor，并移动到 model 所在设备
-    img_tensor = load_image(image).to(device)
-    
+def predict_batch(videos, audios,
+                  video_bb, audio_bb, classifier,
+                  label_map, inv_map,
+                  threshold: float):
+    device = next(classifier.parameters()).device
+    videos = videos.to(device)
+    B = videos.size(0)
+    # prepare audio
+    if audios.dim() == 3 and audios.size(1) != 1:
+        audios = audios.view(B, -1).unsqueeze(1)
+    audios = audios.to(device)
     with torch.no_grad():
-        if enn_head is not None:
-            # hook the features like we did in train.py
-            pooled_representation = {}
-            def hook_fn(module, input, output):
-                pooled_representation["features"] = output.pooler_output
-            model.swin.register_forward_hook(hook_fn)
-            # for the hook only
-            _ = model(img_tensor)
-            features = pooled_representation["features"]
-            evidence = enn_head(features)
-            # convert evidence to Dirichlet parameters
-            alpha = evidence + 1.0
-            alpha0 = torch.sum(alpha, dim=1)
-            num_labels = alpha.shape[1]
-            unknown_score = num_labels / alpha0
-            # not actually used for AUROC
-            probs = alpha / alpha.sum(dim=1, keepdim=True)
-            max_prob, pred_idx = torch.max(probs, dim=1)
+        v_feats = extract_video_features(videos, video_bb)
+        v_pooled = v_feats.mean(dim=1)
+        a_feats = extract_audio_features(audios, audio_bb, target_frames=v_feats.shape[1])
+        a_pooled = a_feats.mean(dim=1)
+        fused = torch.cat([v_pooled, a_pooled], dim=1)
+        logits = classifier(fused)
+        probs = torch.softmax(logits, dim=1)
+        max_prob, idx = probs.max(dim=1)
+    preds, unk_scores = [], []
+    for i in range(B):
+        if max_prob[i].item() < threshold:
+            preds.append(8)
         else:
-            outputs = model(img_tensor)
-            logits = outputs.logits  # shape: (1,6)
-            probs = torch.softmax(logits, dim=1)
-            max_prob, pred_idx = torch.max(probs, dim=1)
-            # not used for AUROC
-            unknown_score = 1 - max_prob
-    
-    # 根据阈值判断：若最大概率低于 threshold，则视为未知（类别 8）
-    if max_prob.item() < threshold:
-        predicted_class = 8
-        annot = "Unknown"
-    else:
-        # 尝试通过权重文件名提取 uk，并进行逆映射
-        uk = extract_uk_from_weights(weights)
-        if uk is not None:
-            forward_map = generate_label_map(uk)
-            # 生成逆映射字典：mapped -> original
-            inverse_map = {v: k for k, v in forward_map.items()}
-            # pred_idx 是模型预测的 mapped 索引（0-indexed）
-            original_label = inverse_map.get(pred_idx.item(), None)
-            if original_label is not None:
-                # 为与 evaluation 中 ground truth 保持一致，输出 1-indexed 标签
-                predicted_class = original_label + 1
-            else:
-                predicted_class = pred_idx.item() + 1
-        else:
-            predicted_class = pred_idx.item() + 1
-
-        # 根据原始标签确定情绪注释
-        annot_dict = {
-            1: "Surprised",
-            2: "Fear",
-            3: "Disgust",
-            4: "Happiness",
-            5: "Sadness",
-            6: "Anger",
-            7: "Neutral"
-        }
-        annot = annot_dict.get(predicted_class, "Unknown")
-    
-    return predicted_class, annot, unknown_score.item()
+            preds.append(inv_map[idx[i].item()])
+        unk_scores.append(1 - max_prob[i].item())
+    return preds, unk_scores, max_prob.cpu()
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Predict image class with unknown detection using open-set emotion recognition model"
-    )
-    parser.add_argument("--weights", type=str, required=True,
-                        help="Path to the model weights (.pth file)")
-    parser.add_argument("--image", type=str, required=True,
-                        help="Path to the input image file or an image tensor")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--video", required=True)
+    parser.add_argument("--audio", required=True)
+    parser.add_argument("--combination", type=int,
+                        choices=list(COMBINATION_SPLITS.keys()), required=True)
+    parser.add_argument("--video_weights", required=True)
+    parser.add_argument("--audio_weights", required=True)
+    parser.add_argument("--classifier_weights", required=True)
     parser.add_argument("--threshold", type=float, default=0.7,
-                        help="Softmax probability threshold for unknown detection (default: 0.7)")
+                        help="Probability threshold for unknown detection")
     args = parser.parse_args()
-
-    predicted_class, annot = predict_image(args.weights, args.image, args.threshold)
-    print(f"Predicted class: {predicted_class} {annot}")
+    video_bb, audio_bb, classifier, label_map, inv_map, device = load_models(
+        args.combination,
+        args.video_weights,
+        args.audio_weights,
+        args.classifier_weights
+    )
+    # transforms
+    video_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+    ])
+    vid = load_video_frames(args.video, num_frames=32,
+                            transform=video_transform).unsqueeze(0)
+    wav = load_audio_file(args.audio)
+    if wav.dim() > 1:
+        wav = wav.mean(dim=0, keepdim=True)
+    wav = wav.unsqueeze(0)
+    preds, scores, _ = predict_batch(
+        vid, wav,
+        video_bb, audio_bb, classifier,
+        label_map, inv_map,
+        args.threshold
+    )
+    p = preds[0]
+    s = scores[0]
+    if p == 8:
+        print(f"Predicted: Unknown, score={s:.4f}")
+    else:
+        name = EMOTION_NAMES.get(p, "Unknown")
+        print(f"Predicted: {p} ({name}), score={s:.4f}")
 
 if __name__ == "__main__":
     main()
