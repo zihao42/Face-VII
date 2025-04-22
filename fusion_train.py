@@ -12,6 +12,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torchvision.transforms as T
 from tqdm import tqdm
+from accelerate import Accelerator
 
 from data import load_video_frames, load_audio_file
 from feature_fusion import MultimodalTransformer
@@ -84,11 +85,11 @@ def train_and_evaluate(
     val_loader: DataLoader,
     loss_fn,
     optimizer,
+    scheduler,
     device: torch.device,
+    accelerator: Accelerator,
     num_epochs: int = 10,
     patience: int = 5,
-    lr_start: float = 1e-5,
-    lr_end: float = 1e-6,
     video_comb: int = 1,
     audio_comb: int = 1,
     weights_dir_visual: str = "weights/backbones/visual",
@@ -106,15 +107,6 @@ def train_and_evaluate(
     backbone_v = load_timesformer_backbone(v_path, device)
     backbone_a = load_audio_backbone(a_path, device)
 
-    model.to(device)
-    # 学习率退火 Cosine Annealing
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=num_epochs,
-        eta_min=lr_end
-    )
-
-    # 早停相关
     best_val_loss = float('inf')
     wait = 0
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -122,7 +114,7 @@ def train_and_evaluate(
     train_losses, val_losses, train_accs, val_accs = [], [], [], []
 
     for epoch in range(num_epochs):
-        # 训练阶段
+        # 训练
         model.train()
         total_loss = total_correct = total_samples = 0
         for wavs, vids, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False):
@@ -133,9 +125,8 @@ def train_and_evaluate(
                 feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
 
             logits, z = model([feat_a, feat_v])
-            loss_items = loss_fn(logits, z, labels, epoch)
-            loss = loss_items[0]
-            loss.backward()
+            loss = loss_fn(logits, z, labels, epoch)[0]
+            accelerator.backward(loss)
             optimizer.step()
 
             preds = logits.argmax(dim=1)
@@ -146,7 +137,7 @@ def train_and_evaluate(
         train_losses.append(total_loss / total_samples)
         train_accs.append(total_correct / total_samples)
 
-        # 验证阶段
+        # 验证
         model.eval()
         v_loss = v_correct = v_samples = 0
         with torch.no_grad():
@@ -155,8 +146,7 @@ def train_and_evaluate(
                 feat_v = extract_frame_features_from_backbone(vids, backbone_v)
                 feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
                 logits, z = model([feat_a, feat_v])
-                loss_items = loss_fn(logits, z, labels, epoch)
-                loss = loss_items[0]
+                loss = loss_fn(logits, z, labels, epoch)[0]
                 preds = logits.argmax(dim=1)
                 v_loss += loss.item() * labels.size(0)
                 v_correct += (preds == labels).sum().item()
@@ -165,28 +155,25 @@ def train_and_evaluate(
         val_losses.append(v_loss / v_samples)
         val_accs.append(v_correct / v_samples)
 
-        print(
-            f"Epoch {epoch+1}/{num_epochs}: "
-            f"Train Loss {train_losses[-1]:.4f}, Acc {train_accs[-1]:.4f} | "
-            f"Val Loss {val_losses[-1]:.4f}, Acc {val_accs[-1]:.4f}"
-        )
+        if accelerator.is_main_process:
+            print(
+                f"Epoch {epoch+1}/{num_epochs}: "
+                f"Train Loss {train_losses[-1]:.4f}, Acc {train_accs[-1]:.4f} | "
+                f"Val Loss {val_losses[-1]:.4f}, Acc {val_accs[-1]:.4f}"
+            )
 
-        # Early stopping 检查
-        current_val_loss = val_losses[-1]
-        if current_val_loss < best_val_loss:
-            best_val_loss = current_val_loss
+        # Early stopping
+        if val_losses[-1] < best_val_loss:
+            best_val_loss = val_losses[-1]
             best_model_wts = copy.deepcopy(model.state_dict())
             wait = 0
         else:
             wait += 1
             if wait >= patience:
-                print(f"Early stopping at epoch {epoch+1}. Best epoch: {epoch+1-wait}.")
                 break
 
-        # 更新学习率
         scheduler.step()
 
-    # 恢复至最佳权重
     model.load_state_dict(best_model_wts)
     return model, {"train_losses": train_losses, "val_losses": val_losses,
                    "train_accs": train_accs, "val_accs": val_accs}
@@ -194,148 +181,83 @@ def train_and_evaluate(
 
 def main():
     parser = argparse.ArgumentParser(description="Train multimodal fusion on RAVDESS")
-    # 基本参数
-    parser.add_argument("--csv_file", type=str,
-                        default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel/multimodal-combination-1.csv",
-                        help="CSV 文件路径，包含 audio/video 文件名、category、emo_label")
-    parser.add_argument("--media_dir", type=str,
-                        default="/media/data1/ningtong/wzh/datasets/RAVDESS/data",
-                        help="存放 .wav/.mp4 文件的目录")
-    parser.add_argument("--output_dir", type=str,
-                        default="./weights",
-                        help="保存模型权重和曲线图的输出目录")
+    # 参数
+    parser.add_argument("--csv_file", type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel/multimodal-combination-1.csv")
+    parser.add_argument("--media_dir", type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
+    parser.add_argument("--output_dir", type=str, default="./weights")
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=30,
-                        help="最大训练 epoch 数")
-    parser.add_argument("--patience", type=int, default=5,
-                        help="Early stopping 耐心值（连续多少个 epoch 验证不提升后停止）")
-    parser.add_argument("--lr", type=float, default=2e-5,
-                        help="初始学习率（退火起始学习率）")
-    parser.add_argument("--lr_end", type=float, default=1e-6,
-                        help="退火结束时的最小学习率")
-    parser.add_argument("--num_frames", type=int, default=32,
-                        help="每段视频采样帧数")
-    parser.add_argument("--video_comb", type=int, default=1,
-                        help="视觉 backbone 对应的组合 ID")
-    parser.add_argument("--audio_comb", type=int, default=1,
-                        help="音频 backbone 对应的组合 ID")
-    # Loss 选择
-    parser.add_argument(
-        "--loss_type",
-        choices=["ce", "variance", "scheduled"],
-        default="scheduled",
-        help="损失类型：ce（仅交叉熵），variance（variance_aware_loss），scheduled（scheduled_variance_aware_loss，默认）"
-    )
-    parser.add_argument("--lambda_reg", type=float, default=0.02,
-                        help="方差正则化强度 λ_reg")
-    parser.add_argument("--lambda_cls", type=float, default=1.0,
-                        help="分类损失权重 λ_cls")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--lr_end", type=float, default=1e-6)
+    parser.add_argument("--num_frames", type=int, default=32)
+    parser.add_argument("--video_comb", type=int, default=1)
+    parser.add_argument("--audio_comb", type=int, default=1)
+    parser.add_argument("--loss_type", choices=["ce", "variance", "scheduled"], default="scheduled")
+    parser.add_argument("--lambda_reg", type=float, default=0.02)
+    parser.add_argument("--lambda_cls", type=float, default=1.0)
     args = parser.parse_args()
 
-    # 读取 CSV 及标签映射
+    accelerator = Accelerator()
+
+    # 数据
     raw_df = pd.read_csv(args.csv_file)
-    unique_labels = sorted(raw_df['emo_label'].unique())
-    label_map = {orig: i for i, orig in enumerate(unique_labels)}
-    num_classes = len(label_map)
+    label_map = {v: i for i, v in enumerate(sorted(raw_df['emo_label'].unique()))}
+    train_samples = list(zip(*(raw_df[raw_df['category']=='train'][c] for c in ['audio_filename','video_filename','emo_label'])))
+    val_df = raw_df[(raw_df['category']=='test') & (raw_df['emo_label']!=8)]
+    val_samples = list(zip(*(val_df[c] for c in ['audio_filename','video_filename','emo_label'])))
 
-    # 拆分训练/验证集
-    train_df = raw_df[raw_df['category'] == 'train']
-    val_df   = raw_df[(raw_df['category'] == 'test') & (raw_df['emo_label'] != 8)]
-    train_samples = list(zip(
-        train_df['audio_filename'], train_df['video_filename'], train_df['emo_label']
-    ))
-    val_samples   = list(zip(
-        val_df['audio_filename'],   val_df['video_filename'],   val_df['emo_label']
-    ))
+    video_transform = T.Compose([T.Resize((224,224)), T.ToTensor(), T.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
+    train_loader = DataLoader(RAVDESSMultimodalDataset(train_samples, args.media_dir, args.num_frames, label_map, video_transform), batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_modality)
+    val_loader = DataLoader(RAVDESSMultimodalDataset(val_samples, args.media_dir, args.num_frames, label_map, video_transform), batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn_modality)
 
-    # 视频预处理
-    video_transform = T.Compose([
-        T.Resize((224, 224)),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
-    # Dataset & DataLoader
-    train_ds = RAVDESSMultimodalDataset(
-        train_samples, args.media_dir, args.num_frames, label_map, video_transform
-    )
-    val_ds   = RAVDESSMultimodalDataset(
-        val_samples,   args.media_dir, args.num_frames, label_map, video_transform
-    )
-    train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True,
-        collate_fn=collate_fn_modality
-    )
-    val_loader = DataLoader(
-        val_ds,   batch_size=args.batch_size, shuffle=False,
-        collate_fn=collate_fn_modality
-    )
-
+    # 模型与优化器
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device {device}, sampling {args.num_frames} frames/video")
-
-    # 构造模型、优化器
-    model = MultimodalTransformer(modality_num=2, num_classes=num_classes, num_layers=1).to(device)
+    model = MultimodalTransformer(modality_num=2, num_classes=len(label_map), num_layers=1).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr_end)
 
-    # 根据 loss_type 构造统一的 loss_fn
+    # Amp & 分布式包装
+    model, optimizer, train_loader, val_loader = accelerator.prepare(model, optimizer, train_loader, val_loader)
+
+    # Loss 函数
     if args.loss_type == "ce":
-        def loss_fn(logits, z, labels, epoch):
-            ce = nn.CrossEntropyLoss()(logits, labels)
-            return ce, None, None, ce, None
+        loss_fn = lambda logits, z, labels, epoch: (nn.CrossEntropyLoss()(logits, labels),)
     elif args.loss_type == "variance":
-        def loss_fn(logits, z, labels, epoch):
-            return variance_aware_loss_from_batch(
-                z, logits, labels,
-                lambda_reg=args.lambda_reg,
-                lambda_cls=args.lambda_cls
-            )
-    else:  # scheduled
-        def loss_fn(logits, z, labels, epoch):
-            return scheduled_variance_aware_loss(
-                z, logits, labels,
-                current_epoch=epoch,
-                total_epochs=args.epochs,
-                lambda_reg=args.lambda_reg,
-                lambda_cls=args.lambda_cls
-            )
+        loss_fn = lambda logits, z, labels, epoch: variance_aware_loss_from_batch(z, logits, labels, lambda_reg=args.lambda_reg, lambda_cls=args.lambda_cls)
+    else:
+        loss_fn = lambda logits, z, labels, epoch: scheduled_variance_aware_loss(z, logits, labels, current_epoch=epoch, total_epochs=args.epochs, lambda_reg=args.lambda_reg, lambda_cls=args.lambda_cls)
 
-    # 训练与验证，传入退火相关与早停参数
+    # 训练
     trained_model, metrics = train_and_evaluate(
-        model, train_loader, val_loader,
-        loss_fn, optimizer, device,
-        num_epochs=args.epochs,
-        patience=args.patience,
-        lr_start=args.lr,
-        lr_end=args.lr_end,
-        video_comb=args.video_comb,
-        audio_comb=args.audio_comb,
+        model, train_loader, val_loader, loss_fn, optimizer, scheduler, device,
+        accelerator, num_epochs=args.epochs, patience=args.patience,
+        video_comb=args.video_comb, audio_comb=args.audio_comb,
         weights_dir_visual=os.path.join(args.output_dir, "backbones", "visual"),
         weights_dir_audio=os.path.join(args.output_dir, "backbones", "audio")
     )
 
-    # 保存权重与曲线图
-    os.makedirs(args.output_dir, exist_ok=True)
-    prefix = os.path.splitext(os.path.basename(args.csv_file))[0]
-    filename = f"{prefix}_{args.loss_type}"
-    wpath = os.path.join(args.output_dir, f"{filename}.pth")
-    torch.save(trained_model.state_dict(), wpath)
-    print(f"Saved model weights to {wpath}")
+    # 保存
+    if accelerator.is_main_process:
+        os.makedirs(args.output_dir, exist_ok=True)
+        prefix = os.path.splitext(os.path.basename(args.csv_file))[0]
+        filename = f"{prefix}_{args.loss_type}"
+        save_path = os.path.join(args.output_dir, f"{filename}.pth")
+        accelerator.save(trained_model.state_dict(), save_path)
+        print(f"Saved model to {save_path}")
 
-    epochs_ran = len(metrics['train_losses'])
-    plt.figure()
-    plt.plot(range(1, epochs_ran+1), metrics['train_losses'], label='Train Loss')
-    plt.plot(range(1, epochs_ran+1), metrics['val_losses'],   label='Val Loss')
-    plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend()
-    plt.savefig(os.path.join(args.output_dir, f"{filename}_loss.png"))
-    print(f"Saved loss curve to {args.output_dir}/{filename}_loss.png")
+        epochs_ran = len(metrics['train_losses'])
+        plt.figure()
+        plt.plot(range(1, epochs_ran+1), metrics['train_losses'], label='Train Loss')
+        plt.plot(range(1, epochs_ran+1), metrics['val_losses'], label='Val Loss')
+        plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend()
+        plt.savefig(os.path.join(args.output_dir, f"{filename}_loss.png"))
 
-    plt.figure()
-    plt.plot(range(1, epochs_ran+1), metrics['train_accs'], label='Train Acc')
-    plt.plot(range(1, epochs_ran+1), metrics['val_accs'],   label='Val Acc')
-    plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.legend()
-    plt.savefig(os.path.join(args.output_dir, f"{filename}_acc.png"))
-    print(f"Saved accuracy curve to {args.output_dir}/{filename}_acc.png")
+        plt.figure()
+        plt.plot(range(1, epochs_ran+1), metrics['train_accs'], label='Train Acc')
+        plt.plot(range(1, epochs_ran+1), metrics['val_accs'], label='Val Acc')
+        plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.legend()
+        plt.savefig(os.path.join(args.output_dir, f"{filename}_acc.png"))
 
 
 if __name__ == '__main__':
