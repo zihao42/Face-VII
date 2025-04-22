@@ -17,6 +17,9 @@ from feature_fusion import MultimodalTransformer
 from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone
 from visual_feature_extract import load_timesformer_backbone, extract_frame_features_from_backbone
 
+# 引入自定义 loss
+from loss import variance_aware_loss_from_batch, scheduled_variance_aware_loss
+
 
 class RAVDESSMultimodalDataset(Dataset):
     """
@@ -28,9 +31,7 @@ class RAVDESSMultimodalDataset(Dataset):
         self.media_dir = media_dir
         self.num_frames = num_frames
         self.label_map = label_map
-        # 应用标签映射
         self.samples = [(a, v, label_map[lbl]) for (a, v, lbl) in samples]
-        # 视频预处理
         if video_transform is None:
             self.video_transform = T.Compose([
                 T.Resize((224, 224)),
@@ -48,12 +49,10 @@ class RAVDESSMultimodalDataset(Dataset):
         wav_path = os.path.join(self.media_dir, audio_fn)
         mp4_path = os.path.join(self.media_dir, video_fn)
 
-        # 加载音频，并合并多通道
         waveform = load_audio_file(wav_path)
         if waveform.size(0) > 1:
             waveform = waveform.mean(dim=0, keepdim=True)
 
-        # 加载视频帧序列
         frames = load_video_frames(
             mp4_path,
             num_frames=self.num_frames,
@@ -64,7 +63,6 @@ class RAVDESSMultimodalDataset(Dataset):
 
 def collate_fn_modality(batch):
     waveforms, videos, labels = zip(*batch)
-    # 统一音频长度
     max_len = max(wf.shape[1] for wf in waveforms)
     padded = []
     for wf in waveforms:
@@ -83,7 +81,7 @@ def train_and_evaluate(
     model: nn.Module,
     train_loader: DataLoader,
     val_loader: DataLoader,
-    criterion,
+    loss_fn,
     optimizer,
     device: torch.device,
     num_epochs: int = 10,
@@ -92,7 +90,7 @@ def train_and_evaluate(
     weights_dir_visual: str = "weights/backbones/visual",
     weights_dir_audio: str = "weights/backbones/audio"
 ):
-    # 预加载视觉与音频 backbone
+    # 预加载 backbone
     v_path = os.path.join(
         weights_dir_visual,
         f"openset_split_combination_{video_comb}_timesformer_backbone.pth"
@@ -117,8 +115,11 @@ def train_and_evaluate(
             with torch.no_grad():
                 feat_v = extract_frame_features_from_backbone(vids, backbone_v)
                 feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
-            logits, _ = model([feat_a, feat_v])
-            loss = criterion(logits, labels)
+
+            # 前向 + loss
+            logits, z = model([feat_a, feat_v])
+            loss_items = loss_fn(logits, z, labels, epoch)
+            loss = loss_items[0]
             loss.backward()
             optimizer.step()
 
@@ -130,7 +131,7 @@ def train_and_evaluate(
         train_losses.append(total_loss / total_samples)
         train_accs.append(total_correct / total_samples)
 
-        # 验证阶段（只评估已知类别）
+        # 验证阶段
         model.eval()
         v_loss = v_correct = v_samples = 0
         with torch.no_grad():
@@ -138,8 +139,9 @@ def train_and_evaluate(
                 wavs, vids, labels = wavs.to(device), vids.to(device), labels.to(device)
                 feat_v = extract_frame_features_from_backbone(vids, backbone_v)
                 feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
-                logits, _ = model([feat_a, feat_v])
-                loss = criterion(logits, labels)
+                logits, z = model([feat_a, feat_v])
+                loss_items = loss_fn(logits, z, labels, epoch)
+                loss = loss_items[0]
                 preds = logits.argmax(dim=1)
                 v_loss += loss.item() * labels.size(0)
                 v_correct += (preds == labels).sum().item()
@@ -160,9 +162,10 @@ def train_and_evaluate(
 
 def main():
     parser = argparse.ArgumentParser(description="Train multimodal fusion on RAVDESS")
+    # 基本参数
     parser.add_argument("--csv_file", type=str,
                         default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel/multimodal-combination-1.csv",
-                        help="包含 audio/video 文件名、category、emo_label 的 CSV 文件路径")
+                        help="CSV 文件路径，包含 audio/video 文件名、category、emo_label")
     parser.add_argument("--media_dir", type=str,
                         default="/media/data1/ningtong/wzh/datasets/RAVDESS/data",
                         help="存放 .wav/.mp4 文件的目录")
@@ -178,18 +181,28 @@ def main():
                         help="视觉 backbone 对应的组合 ID")
     parser.add_argument("--audio_comb", type=int, default=1,
                         help="音频 backbone 对应的组合 ID")
+    # Loss 选择
+    parser.add_argument(
+        "--loss_type",
+        choices=["ce", "variance", "scheduled"],
+        default="scheduled",
+        help="损失类型：ce（仅交叉熵），variance（variance_aware_loss），scheduled（scheduled_variance_aware_loss，默认）"
+    )
+    parser.add_argument("--lambda_reg", type=float, default=0.02,
+                        help="方差正则化强度 λ_reg")
+    parser.add_argument("--lambda_cls", type=float, default=1.0,
+                        help="分类损失权重 λ_cls")
     args = parser.parse_args()
 
-    # 1. 读取原始 CSV，构建全局标签映射
+    # 读取 CSV 及标签映射
     raw_df = pd.read_csv(args.csv_file)
     unique_labels = sorted(raw_df['emo_label'].unique())
     label_map = {orig: i for i, orig in enumerate(unique_labels)}
     num_classes = len(label_map)
 
-    # 2. 拆分训练/验证集：验证集只保留已知类别
+    # 拆分训练/验证集
     train_df = raw_df[raw_df['category'] == 'train']
     val_df   = raw_df[(raw_df['category'] == 'test') & (raw_df['emo_label'] != 8)]
-
     train_samples = list(zip(
         train_df['audio_filename'], train_df['video_filename'], train_df['emo_label']
     ))
@@ -197,14 +210,14 @@ def main():
         val_df['audio_filename'],   val_df['video_filename'],   val_df['emo_label']
     ))
 
-    # 3. 视频预处理（同 Dataset 内部）
+    # 视频预处理
     video_transform = T.Compose([
         T.Resize((224, 224)),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    # 4. 构造 Dataset 和 DataLoader
+    # Dataset & DataLoader
     train_ds = RAVDESSMultimodalDataset(
         train_samples, args.media_dir, args.num_frames, label_map, video_transform
     )
@@ -223,15 +236,36 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device {device}, sampling {args.num_frames} frames/video")
 
-    # 5. 模型、损失、优化器
+    # 构造模型、优化器
     model = MultimodalTransformer(modality_num=2, num_classes=num_classes, num_layers=1).to(device)
-    criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    # 6. 训练与验证
+    # 根据 loss_type 构造统一的 loss_fn
+    if args.loss_type == "ce":
+        def loss_fn(logits, z, labels, epoch):
+            ce = nn.CrossEntropyLoss()(logits, labels)
+            return ce, None, None, ce, None
+    elif args.loss_type == "variance":
+        def loss_fn(logits, z, labels, epoch):
+            return variance_aware_loss_from_batch(
+                z, logits, labels,
+                lambda_reg=args.lambda_reg,
+                lambda_cls=args.lambda_cls
+            )
+    else:  # scheduled
+        def loss_fn(logits, z, labels, epoch):
+            return scheduled_variance_aware_loss(
+                z, logits, labels,
+                current_epoch=epoch,
+                total_epochs=args.epochs,
+                lambda_reg=args.lambda_reg,
+                lambda_cls=args.lambda_cls
+            )
+
+    # 训练与验证
     trained_model, metrics = train_and_evaluate(
         model, train_loader, val_loader,
-        criterion, optimizer, device,
+        loss_fn, optimizer, device,
         num_epochs=args.epochs,
         video_comb=args.video_comb,
         audio_comb=args.audio_comb,
@@ -239,7 +273,7 @@ def main():
         weights_dir_audio=os.path.join(args.output_dir, "backbones", "audio")
     )
 
-    # 7. 保存权重和曲线图
+    # 保存权重与曲线图
     os.makedirs(args.output_dir, exist_ok=True)
     prefix = os.path.splitext(os.path.basename(args.csv_file))[0]
     wpath = os.path.join(args.output_dir, f"{prefix}.pth")
