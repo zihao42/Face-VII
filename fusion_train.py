@@ -1,169 +1,325 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+import argparse
+import copy
 import torch
+import torch.nn.functional as F
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
+import pandas as pd
+import matplotlib.pyplot as plt
+import torchvision.transforms as T
 from tqdm import tqdm
-from audio_feature_extract import extract_audio_features
-from visual_feature_extract import extract_video_features
-from dummy_datasets import DummyTimeSformerDataset, DummyWav2Vec2Dataset
-from transformers import TimesformerModel, Wav2Vec2Model
+
+from data import load_video_frames, load_audio_file
 from feature_fusion import MultimodalTransformer
+from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone
+from visual_feature_extract import load_timesformer_backbone, extract_frame_features_from_backbone
+
+# 引入自定义 loss
+from loss import variance_aware_loss_from_batch, scheduled_variance_aware_loss
 
 
-def train_and_evaluate(video_model,
-                       audio_model,
-                       fusion_model,
-                       video_train_loader,
-                       video_val_loader,
-                       audio_train_loader,
-                       audio_val_loader,
-                       criterion,
-                       optimizer,
-                       device,
-                       num_epochs=10):
-    train_losses = []
-    val_losses = []
-    train_accs = []
-    val_accs = []
+class RAVDESSMultimodalDataset(Dataset):
+    """
+    样本列表驱动的数据集：
+    samples: list of (audio_filename, video_filename, raw_emo_label)
+    label_map: dict 从 raw_emo_label 到 紧凑的 0..C-1
+    """
+    def __init__(self, samples, media_dir, num_frames, label_map, video_transform=None):
+        self.media_dir = media_dir
+        self.num_frames = num_frames
+        self.label_map = label_map
+        self.samples = [(a, v, label_map[lbl]) for (a, v, lbl) in samples]
+        if video_transform is None:
+            self.video_transform = T.Compose([
+                T.Resize((224, 224)),
+                T.ToTensor(),
+                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+        else:
+            self.video_transform = video_transform
 
-    video_model.eval()
-    audio_model.eval()
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        audio_fn, video_fn, label = self.samples[idx]
+        wav_path = os.path.join(self.media_dir, audio_fn)
+        mp4_path = os.path.join(self.media_dir, video_fn)
+
+        waveform = load_audio_file(wav_path)
+        if waveform.size(0) > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+
+        frames = load_video_frames(
+            mp4_path,
+            num_frames=self.num_frames,
+            transform=self.video_transform
+        )
+        return waveform, frames, label
+
+
+def collate_fn_modality(batch):
+    waveforms, videos, labels = zip(*batch)
+    max_len = max(wf.shape[1] for wf in waveforms)
+    padded = []
+    for wf in waveforms:
+        pad_len = max_len - wf.shape[1]
+        wf_p = F.pad(wf, (0, pad_len), mode='constant', value=0)
+        if wf_p.dim() == 2:
+            wf_p = wf_p.squeeze(0)
+        padded.append(wf_p)
+    audio_batch = torch.stack(padded, dim=0)
+    video_batch = torch.stack(videos, dim=0)
+    label_batch = torch.tensor(labels, dtype=torch.long)
+    return audio_batch, video_batch, label_batch
+
+
+def train_and_evaluate(
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    loss_fn,
+    optimizer,
+    device: torch.device,
+    num_epochs: int = 10,
+    patience: int = 5,
+    video_comb: int = 1,
+    audio_comb: int = 1,
+    weights_dir_visual: str = "weights/backbones/visual",
+    weights_dir_audio: str = "weights/backbones/audio"
+):
+    # 预加载 backbone
+    v_path = os.path.join(
+        weights_dir_visual,
+        f"openset_split_combination_{video_comb}_timesformer_backbone.pth"
+    )
+    a_path = os.path.join(
+        weights_dir_audio,
+        f"openset_split_combination_{audio_comb}_wav2vec_backbone.pth"
+    )
+    backbone_v = load_timesformer_backbone(v_path, device)
+    backbone_a = load_audio_backbone(a_path, device)
+
+    model.to(device)
+    # 早停相关
+    best_val_loss = float('inf')
+    wait = 0
+    best_model_wts = copy.deepcopy(model.state_dict())
+
+    train_losses, val_losses, train_accs, val_accs = [], [], [], []
+
     for epoch in range(num_epochs):
-        fusion_model.train()
-
-        running_loss = 0.0
-        correct_train = 0
-        total_train = 0
-
-        num_batches = len(video_train_loader)
-        video_train_iter = iter(video_train_loader)
-        audio_train_iter = iter(audio_train_loader)
-
-        epoch_iter = tqdm(range(num_batches), desc=f"Training Epoch {epoch + 1}/{num_epochs}", leave=False,
-                          unit="batch")
-        for _ in epoch_iter:
-            waveforms, labels = next(audio_train_iter)
-            videos, _ = next(video_train_iter)
-
-            waveforms = waveforms.to(device)
-            videos = videos.to(device)  # videos 形状: (batch, T, C, H, W)
-            labels = labels.to(device)
-
+        # 训练阶段
+        model.train()
+        total_loss = total_correct = total_samples = 0
+        for wavs, vids, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False):
+            wavs, vids, labels = wavs.to(device), vids.to(device), labels.to(device)
             optimizer.zero_grad()
-
             with torch.no_grad():
-                features_v = extract_video_features(videos, video_model)
-                features_a = extract_audio_features(waveforms, audio_model, 16)
-                assert features_a.shape[-1] == features_v.shape[-1], f"Embedding dims are not matched!" \
-                                                                     f"Audio shape: {features_a.shape} v.s. " \
-                                                                     f"Video shape: {features_v.shape}"
+                feat_v = extract_frame_features_from_backbone(vids, backbone_v)
+                feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
 
-            logits, fused_feature = fusion_model([features_a, features_v])
-            loss = criterion(logits, labels)
+            # 前向 + loss
+            logits, z = model([feat_a, feat_v])
+            loss_items = loss_fn(logits, z, labels, epoch)
+            loss = loss_items[0]
             loss.backward()
             optimizer.step()
 
-            running_loss += loss.item() * waveforms.size(0)
-            _, preds = torch.max(logits, 1)
-            correct_train += torch.sum(preds == labels).item()
-            total_train += labels.size(0)
-            epoch_iter.set_postfix(loss=loss.item())
+            preds = logits.argmax(dim=1)
+            total_loss += loss.item() * labels.size(0)
+            total_correct += (preds == labels).sum().item()
+            total_samples += labels.size(0)
 
-        epoch_train_loss = running_loss / total_train
-        epoch_train_acc = correct_train / total_train
+        train_losses.append(total_loss / total_samples)
+        train_accs.append(total_correct / total_samples)
 
-        fusion_model.eval()
-        running_val_loss = 0.0
-        correct_val = 0
-        total_val = 0
-        num_batches_val = len(video_val_loader)
-        video_val_iter = iter(video_val_loader)
-        audio_val_iter = iter(audio_val_loader)
-
+        # 验证阶段
+        model.eval()
+        v_loss = v_correct = v_samples = 0
         with torch.no_grad():
-            for _ in range(num_batches_val):
-                waveforms, labels = next(audio_val_iter)
-                videos, _ = next(video_val_iter)
-                waveforms = waveforms.to(device)
-                videos = videos.to(device)  # videos 形状: (batch, T, C, H, W)
-                labels = labels.to(device)
+            for wavs, vids, labels in val_loader:
+                wavs, vids, labels = wavs.to(device), vids.to(device), labels.to(device)
+                feat_v = extract_frame_features_from_backbone(vids, backbone_v)
+                feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
+                logits, z = model([feat_a, feat_v])
+                loss_items = loss_fn(logits, z, labels, epoch)
+                loss = loss_items[0]
+                preds = logits.argmax(dim=1)
+                v_loss += loss.item() * labels.size(0)
+                v_correct += (preds == labels).sum().item()
+                v_samples += labels.size(0)
 
-                features_v = extract_video_features(videos, video_model)
-                features_a = extract_audio_features(waveforms, audio_model, 16)
-                logits, fused_feature = fusion_model([features_a, features_v])
-                loss = criterion(logits, labels)
-                running_val_loss += loss.item() * waveforms.size(0)
-                _, preds = torch.max(logits, 1)
-                correct_val += torch.sum(preds == labels).item()
-                total_val += labels.size(0)
-        epoch_val_loss = running_val_loss / total_val
-        epoch_val_acc = correct_val / total_val
+        val_losses.append(v_loss / v_samples)
+        val_accs.append(v_correct / v_samples)
 
-        train_losses.append(epoch_train_loss)
-        val_losses.append(epoch_val_loss)
-        train_accs.append(epoch_train_acc)
-        val_accs.append(epoch_val_acc)
-
-        print(f"Epoch {epoch + 1}/{num_epochs}:")
-        print(f"  Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f}")
-        print(f"  Val   Loss: {epoch_val_loss:.4f}, Val   Acc: {epoch_val_acc:.4f}")
-
-    metrics = {
-        'train_losses': train_losses,
-        'val_losses': val_losses,
-        'train_accs': train_accs,
-        'val_accs': val_accs
-    }
-    return fusion_model, metrics
-
-
-# ===================== 主函数 =====================
-def main():
-    batch_size = 4
-    num_epochs = 3
-    learning_rate = 1e-6
-
-    # ---------------------- 设备设置 ----------------------
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device_str = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device {device_str}")
-
-    # 构造数据集
-    train_dataset_v = DummyTimeSformerDataset(num_samples=40)
-    train_dataset_a = DummyWav2Vec2Dataset(num_samples=40)
-    val_dataset_v = DummyTimeSformerDataset(num_samples=10)
-    val_dataset_a = DummyWav2Vec2Dataset(num_samples=10)
-
-    # 划分训练集和验证集
-
-    train_loader_v = DataLoader(train_dataset_v, batch_size=batch_size, shuffle=False)
-    val_loader_v = DataLoader(val_dataset_v, batch_size=batch_size, shuffle=False)
-    train_loader_a = DataLoader(train_dataset_a, batch_size=batch_size, shuffle=False)
-    val_loader_a = DataLoader(val_dataset_a, batch_size=batch_size, shuffle=False)
-
-    # 构造模型（每个 CSV 的类别数可能不同）
-    print("Loading video model...")
-    model_v = TimesformerModel.from_pretrained(
-            "facebook/timesformer-base-finetuned-k400", output_hidden_states=True
+        print(
+            f"Epoch {epoch+1}/{num_epochs}: "
+            f"Train Loss {train_losses[-1]:.4f}, Acc {train_accs[-1]:.4f} | "
+            f"Val Loss {val_losses[-1]:.4f}, Acc {val_accs[-1]:.4f}"
         )
 
-    print("Loading audio model...")
-    model_a = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base")
-    model_v = model_v.to(device)
-    model_a = model_a.to(device)
-    print("Loading fusion model...")
-    model_fusion = MultimodalTransformer(modality_num=2, num_classes=5)
-    model_fusion = model_fusion.to(device)
+        # Early stopping 检查
+        current_val_loss = val_losses[-1]
+        if current_val_loss < best_val_loss:
+            best_val_loss = current_val_loss
+            best_model_wts = copy.deepcopy(model.state_dict())
+            wait = 0
+        else:
+            wait += 1
+            if wait >= patience:
+                print(f"Early stopping at epoch {epoch+1}. Best epoch: {epoch+1-wait}.")
+                break
 
-    # 定义损失函数和优化器
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model_fusion.parameters(), lr=learning_rate)
+    # 恢复至最佳权重
+    model.load_state_dict(best_model_wts)
+    return model, {"train_losses": train_losses, "val_losses": val_losses,
+                   "train_accs": train_accs, "val_accs": val_accs}
 
-    # 训练并评估模型
-    model, metrics = train_and_evaluate(model_v, model_a, model_fusion,
-                                        train_loader_v, val_loader_v,
-                                        train_loader_a, val_loader_a,
-                                        criterion, optimizer, device,
-                                        num_epochs=num_epochs)
+
+def main():
+    parser = argparse.ArgumentParser(description="Train multimodal fusion on RAVDESS")
+    # 基本参数
+    parser.add_argument("--csv_file", type=str,
+                        default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel/multimodal-combination-1.csv",
+                        help="CSV 文件路径，包含 audio/video 文件名、category、emo_label")
+    parser.add_argument("--media_dir", type=str,
+                        default="/media/data1/ningtong/wzh/datasets/RAVDESS/data",
+                        help="存放 .wav/.mp4 文件的目录")
+    parser.add_argument("--output_dir", type=str,
+                        default="./weights",
+                        help="保存模型权重和曲线图的输出目录")
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--epochs", type=int, default=30,
+                        help="最大训练 epoch 数")
+    parser.add_argument("--patience", type=int, default=5,
+                        help="Early stopping 耐心值（连续多少个 epoch 验证不提升后停止）")
+    parser.add_argument("--lr", type=float, default=1e-6)
+    parser.add_argument("--num_frames", type=int, default=32,
+                        help="每段视频采样帧数")
+    parser.add_argument("--video_comb", type=int, default=1,
+                        help="视觉 backbone 对应的组合 ID")
+    parser.add_argument("--audio_comb", type=int, default=1,
+                        help="音频 backbone 对应的组合 ID")
+    # Loss 选择
+    parser.add_argument(
+        "--loss_type",
+        choices=["ce", "variance", "scheduled"],
+        default="scheduled",
+        help="损失类型：ce（仅交叉熵），variance（variance_aware_loss），scheduled（scheduled_variance_aware_loss，默认）"
+    )
+    parser.add_argument("--lambda_reg", type=float, default=0.02,
+                        help="方差正则化强度 λ_reg")
+    parser.add_argument("--lambda_cls", type=float, default=1.0,
+                        help="分类损失权重 λ_cls")
+    args = parser.parse_args()
+
+    # 读取 CSV 及标签映射
+    raw_df = pd.read_csv(args.csv_file)
+    unique_labels = sorted(raw_df['emo_label'].unique())
+    label_map = {orig: i for i, orig in enumerate(unique_labels)}
+    num_classes = len(label_map)
+
+    # 拆分训练/验证集
+    train_df = raw_df[raw_df['category'] == 'train']
+    val_df   = raw_df[(raw_df['category'] == 'test') & (raw_df['emo_label'] != 8)]
+    train_samples = list(zip(
+        train_df['audio_filename'], train_df['video_filename'], train_df['emo_label']
+    ))
+    val_samples   = list(zip(
+        val_df['audio_filename'],   val_df['video_filename'],   val_df['emo_label']
+    ))
+
+    # 视频预处理
+    video_transform = T.Compose([
+        T.Resize((224, 224)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    # Dataset & DataLoader
+    train_ds = RAVDESSMultimodalDataset(
+        train_samples, args.media_dir, args.num_frames, label_map, video_transform
+    )
+    val_ds   = RAVDESSMultimodalDataset(
+        val_samples,   args.media_dir, args.num_frames, label_map, video_transform
+    )
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        collate_fn=collate_fn_modality
+    )
+    val_loader = DataLoader(
+        val_ds,   batch_size=args.batch_size, shuffle=False,
+        collate_fn=collate_fn_modality
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device {device}, sampling {args.num_frames} frames/video")
+
+    # 构造模型、优化器
+    model = MultimodalTransformer(modality_num=2, num_classes=num_classes, num_layers=1).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+    # 根据 loss_type 构造统一的 loss_fn
+    if args.loss_type == "ce":
+        def loss_fn(logits, z, labels, epoch):
+            ce = nn.CrossEntropyLoss()(logits, labels)
+            return ce, None, None, ce, None
+    elif args.loss_type == "variance":
+        def loss_fn(logits, z, labels, epoch):
+            return variance_aware_loss_from_batch(
+                z, logits, labels,
+                lambda_reg=args.lambda_reg,
+                lambda_cls=args.lambda_cls
+            )
+    else:  # scheduled
+        def loss_fn(logits, z, labels, epoch):
+            return scheduled_variance_aware_loss(
+                z, logits, labels,
+                current_epoch=epoch,
+                total_epochs=args.epochs,
+                lambda_reg=args.lambda_reg,
+                lambda_cls=args.lambda_cls
+            )
+
+    # 训练与验证，传入 patience 参数
+    trained_model, metrics = train_and_evaluate(
+        model, train_loader, val_loader,
+        loss_fn, optimizer, device,
+        num_epochs=args.epochs,
+        patience=args.patience,
+        video_comb=args.video_comb,
+        audio_comb=args.audio_comb,
+        weights_dir_visual=os.path.join(args.output_dir, "backbones", "visual"),
+        weights_dir_audio=os.path.join(args.output_dir, "backbones", "audio")
+    )
+
+    # 保存权重与曲线图
+    os.makedirs(args.output_dir, exist_ok=True)
+    prefix = os.path.splitext(os.path.basename(args.csv_file))[0]
+    filename = f"{prefix}_{args.loss_type}"
+    wpath = os.path.join(args.output_dir, f"{filename}.pth")
+    torch.save(trained_model.state_dict(), wpath)
+    print(f"Saved model weights to {wpath}")
+
+    epochs_ran = len(metrics['train_losses'])
+    plt.figure()
+    plt.plot(range(1, epochs_ran+1), metrics['train_losses'], label='Train Loss')
+    plt.plot(range(1, epochs_ran+1), metrics['val_losses'],   label='Val Loss')
+    plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend()
+    plt.savefig(os.path.join(args.output_dir, f"{filename}_loss.png"))
+    print(f"Saved loss curve to {args.output_dir}/{filename}_loss.png")
+
+    plt.figure()
+    plt.plot(range(1, epochs_ran+1), metrics['train_accs'], label='Train Acc')
+    plt.plot(range(1, epochs_ran+1), metrics['val_accs'],   label='Val Acc')
+    plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.legend()
+    plt.savefig(os.path.join(args.output_dir, f"{filename}_acc.png"))
+    print(f"Saved accuracy curve to {args.output_dir}/{filename}_acc.png")
 
 
 if __name__ == '__main__':
