@@ -36,8 +36,10 @@ class RAVDESSMultimodalDataset(Dataset):
             ])
         else:
             self.video_transform = video_transform
+
     def __len__(self):
         return len(self.samples)
+
     def __getitem__(self, idx):
         audio_fn, video_fn, label = self.samples[idx]
         wav_path = os.path.join(self.media_dir, audio_fn)
@@ -51,6 +53,7 @@ class RAVDESSMultimodalDataset(Dataset):
             transform=self.video_transform
         )
         return waveform, frames, label
+
 
 def collate_fn_modality(batch):
     waveforms, videos, labels = zip(*batch)
@@ -86,9 +89,10 @@ def train_and_evaluate(
     P_reg: int = 3,
     video_comb: int = 1,
     audio_comb: int = 1,
-    weights_dir_visual: str = "/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual",
-    weights_dir_audio: str = "/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio"
+    weights_dir_visual: str = "weights/backbones/visual",
+    weights_dir_audio: str = "weights/backbones/audio"
 ):
+    # 加载 backbones
     v_path = os.path.join(weights_dir_visual, f"openset_split_combination_{video_comb}_timesformer_backbone.pth")
     a_path = os.path.join(weights_dir_audio, f"openset_split_combination_{audio_comb}_wav2vec_backbone.pth")
     backbone_v = load_timesformer_backbone(v_path, device)
@@ -100,14 +104,12 @@ def train_and_evaluate(
     reg_counter = 0
     best_R = float('inf')
     best_R_wts = None
-    best_val_loss = float('inf')
-    wait = 0
-    best_model_wts = copy.deepcopy(model.state_dict())
 
     train_losses, val_losses, train_accs, val_accs = [], [], [], []
     regs, delta_Rs = [], []
 
     for epoch in range(1, num_epochs+1):
+        # 训练
         model.train()
         total_loss = total_correct = total_samples = 0
         for wavs, vids, labels in tqdm(train_loader, desc=f"Epoch {epoch}/{num_epochs}", leave=False):
@@ -134,6 +136,7 @@ def train_and_evaluate(
         train_losses.append(total_loss/total_samples)
         train_accs.append(total_correct/total_samples)
 
+        # 验证
         model.eval()
         v_loss = v_correct = v_samples = 0
         with torch.no_grad():
@@ -153,6 +156,7 @@ def train_and_evaluate(
         val_losses.append(val_loss)
         val_accs.append(val_acc)
 
+        # 记录 R 和 ΔR
         if compute_R:
             regs.append(R)
             delta_Rs.append(regs[-2] - regs[-1] if len(regs)>1 else None)
@@ -160,17 +164,13 @@ def train_and_evaluate(
             regs.append(None)
             delta_Rs.append(None)
 
+        # 日志输出
         if accelerator.is_main_process:
             dR_str = f"{delta_Rs[-1]:.4f}" if delta_Rs[-1] is not None else "N/A"
-            print(f"Epoch {epoch}/{num_epochs}: Train {train_losses[-1]:.4f}, Acc {train_accs[-1]:.4f} | Val {val_loss:.4f}, Acc {val_acc:.4f} | ΔR {dR_str}")
+            print(f"Epoch {epoch}/{num_epochs}: Train {train_losses[-1]:.4f}, Acc {train_accs[-1]:.4f} | "
+                  f"Val {val_loss:.4f}, Acc {val_acc:.4f} | ΔR {dR_str}")
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_model_wts = copy.deepcopy(model.state_dict())
-            wait = 0
-        else:
-            wait += 1
-
+        # Open-Set Early Stop
         if not acc_saturated:
             if val_acc >= T_acc:
                 acc_counter += 1
@@ -182,20 +182,12 @@ def train_and_evaluate(
                     if accelerator.is_main_process:
                         print(f"Open-Set early stopping at epoch {epoch}.")
                     break
-        if not acc_saturated and wait >= patience:
-            if accelerator.is_main_process:
-                print(f"Closed-Set early stopping at epoch {epoch}.")
-            break
 
         scheduler.step()
 
-    if compute_R:
-        if best_R_wts is not None:
-            model.load_state_dict(best_R_wts)
-        else:
-            model.load_state_dict(best_model_wts)
-    else:
-        model.load_state_dict(best_model_wts)
+    # 加载最佳 R 权重
+    if compute_R and best_R_wts is not None:
+        model.load_state_dict(best_R_wts)
 
     return model, {
         "train_losses": train_losses,
@@ -210,10 +202,9 @@ def main():
     parser = argparse.ArgumentParser(description="Train multimodal fusion on RAVDESS")
     parser.add_argument("--csv_file", type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel/multimodal-combination-1.csv")
     parser.add_argument("--media_dir", type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
-    parser.add_argument("--output_dir", type=str, default="/media/data1/ningtong/wzh/projects/Face-VII/weights/")
+    parser.add_argument("--output_dir", type=str, default="/media/data1/ningtong/wzh/projects/Face-VII/weights")
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--lr_end", type=float, default=1e-6)
     parser.add_argument("--num_frames", type=int, default=32)
@@ -236,8 +227,14 @@ def main():
     val_samples = list(zip(*(val_df[c] for c in ['audio_filename','video_filename','emo_label'])))
 
     video_transform = T.Compose([T.Resize((224,224)),T.ToTensor(),T.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-    train_loader = DataLoader(RAVDESSMultimodalDataset(train_samples,args.media_dir,args.num_frames,label_map,video_transform),batch_size=args.batch_size,shuffle=True,collate_fn=collate_fn_modality)
-    val_loader   = DataLoader(RAVDESSMultimodalDataset(val_samples,  args.media_dir,args.num_frames,label_map,video_transform),batch_size=args.batch_size,shuffle=False,collate_fn=collate_fn_modality)
+    train_loader = DataLoader(
+        RAVDESSMultimodalDataset(train_samples,args.media_dir,args.num_frames,label_map,video_transform),
+        batch_size=args.batch_size,shuffle=True,collate_fn=collate_fn_modality
+    )
+    val_loader = DataLoader(
+        RAVDESSMultimodalDataset(val_samples,args.media_dir,args.num_frames,label_map,video_transform),
+        batch_size=args.batch_size,shuffle=False,collate_fn=collate_fn_modality
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultimodalTransformer(modality_num=2,num_classes=len(label_map),num_layers=1).to(device)
@@ -249,8 +246,6 @@ def main():
     if args.loss_type=="ce":
         loss_fn=lambda logits,z,labels,epoch:(nn.CrossEntropyLoss()(logits,labels),)
     elif args.loss_type=="variance":
-        loss_fn=lambda logits,z,labels,epoch: variance_aware_loss_from_batch(z,logits,labels,lambda_reg=args.lambda_reg,lambda_cls=args.lambda_cls)
-    elif args.loss_type=="scheduled":
         loss_fn=lambda logits,z,labels,epoch: variance_aware_loss_from_batch(z,logits,labels,lambda_reg=args.lambda_reg,lambda_cls=args.lambda_cls)
     else:
         loss_fn=lambda logits,z,labels,epoch: scheduled_variance_aware_loss(z,logits,labels,current_epoch=epoch,total_epochs=args.epochs,lambda_reg=args.lambda_reg,lambda_cls=args.lambda_cls)
@@ -272,7 +267,6 @@ def main():
         accelerator.save(trained_model.state_dict(),save_path)
         print(f"Saved model to {save_path}")
 
-        # Plot Loss
         epochs_ran = len(metrics['train_losses'])
         plt.figure()
         plt.plot(range(1,epochs_ran+1),metrics['train_losses'],label='Train Loss')
@@ -280,14 +274,12 @@ def main():
         plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend()
         plt.savefig(os.path.join(args.output_dir,f"{filename}_loss.png"))
 
-        # Plot Acc
         plt.figure()
         plt.plot(range(1,epochs_ran+1),metrics['train_accs'],label='Train Acc')
         plt.plot(range(1,epochs_ran+1),metrics['val_accs'],  label='Val Acc')
         plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.legend()
         plt.savefig(os.path.join(args.output_dir,f"{filename}_acc.png"))
 
-        # Plot ΔR
         plt.figure()
         delta_Rs = metrics['delta_Rs']
         if any(d is not None for d in delta_Rs):
