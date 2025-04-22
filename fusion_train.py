@@ -3,6 +3,7 @@
 
 import os
 import argparse
+import copy
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -85,6 +86,7 @@ def train_and_evaluate(
     optimizer,
     device: torch.device,
     num_epochs: int = 10,
+    patience: int = 5,
     video_comb: int = 1,
     audio_comb: int = 1,
     weights_dir_visual: str = "weights/backbones/visual",
@@ -103,6 +105,11 @@ def train_and_evaluate(
     backbone_a = load_audio_backbone(a_path, device)
 
     model.to(device)
+    # 早停相关
+    best_val_loss = float('inf')
+    wait = 0
+    best_model_wts = copy.deepcopy(model.state_dict())
+
     train_losses, val_losses, train_accs, val_accs = [], [], [], []
 
     for epoch in range(num_epochs):
@@ -156,6 +163,20 @@ def train_and_evaluate(
             f"Val Loss {val_losses[-1]:.4f}, Acc {val_accs[-1]:.4f}"
         )
 
+        # Early stopping 检查
+        current_val_loss = val_losses[-1]
+        if current_val_loss < best_val_loss:
+            best_val_loss = current_val_loss
+            best_model_wts = copy.deepcopy(model.state_dict())
+            wait = 0
+        else:
+            wait += 1
+            if wait >= patience:
+                print(f"Early stopping at epoch {epoch+1}. Best epoch: {epoch+1-wait}.")
+                break
+
+    # 恢复至最佳权重
+    model.load_state_dict(best_model_wts)
     return model, {"train_losses": train_losses, "val_losses": val_losses,
                    "train_accs": train_accs, "val_accs": val_accs}
 
@@ -173,7 +194,10 @@ def main():
                         default="./weights",
                         help="保存模型权重和曲线图的输出目录")
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=30,
+                        help="最大训练 epoch 数")
+    parser.add_argument("--patience", type=int, default=5,
+                        help="Early stopping 耐心值（连续多少个 epoch 验证不提升后停止）")
     parser.add_argument("--lr", type=float, default=1e-6)
     parser.add_argument("--num_frames", type=int, default=32,
                         help="每段视频采样帧数")
@@ -262,11 +286,12 @@ def main():
                 lambda_cls=args.lambda_cls
             )
 
-    # 训练与验证
+    # 训练与验证，传入 patience 参数
     trained_model, metrics = train_and_evaluate(
         model, train_loader, val_loader,
         loss_fn, optimizer, device,
         num_epochs=args.epochs,
+        patience=args.patience,
         video_comb=args.video_comb,
         audio_comb=args.audio_comb,
         weights_dir_visual=os.path.join(args.output_dir, "backbones", "visual"),
@@ -276,23 +301,25 @@ def main():
     # 保存权重与曲线图
     os.makedirs(args.output_dir, exist_ok=True)
     prefix = os.path.splitext(os.path.basename(args.csv_file))[0]
-    wpath = os.path.join(args.output_dir, f"{prefix}.pth")
+    filename = f"{prefix}_{args.loss_type}"
+    wpath = os.path.join(args.output_dir, f"{filename}.pth")
     torch.save(trained_model.state_dict(), wpath)
     print(f"Saved model weights to {wpath}")
 
+    epochs_ran = len(metrics['train_losses'])
     plt.figure()
-    plt.plot(metrics['train_losses'], label='Train Loss')
-    plt.plot(metrics['val_losses'],   label='Val Loss')
+    plt.plot(range(1, epochs_ran+1), metrics['train_losses'], label='Train Loss')
+    plt.plot(range(1, epochs_ran+1), metrics['val_losses'],   label='Val Loss')
     plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend()
-    plt.savefig(os.path.join(args.output_dir, f"{prefix}_loss.png"))
-    print(f"Saved loss curve to {args.output_dir}/{prefix}_loss.png")
+    plt.savefig(os.path.join(args.output_dir, f"{filename}_loss.png"))
+    print(f"Saved loss curve to {args.output_dir}/{filename}_loss.png")
 
     plt.figure()
-    plt.plot(metrics['train_accs'], label='Train Acc')
-    plt.plot(metrics['val_accs'],   label='Val Acc')
+    plt.plot(range(1, epochs_ran+1), metrics['train_accs'], label='Train Acc')
+    plt.plot(range(1, epochs_ran+1), metrics['val_accs'],   label='Val Acc')
     plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.legend()
-    plt.savefig(os.path.join(args.output_dir, f"{prefix}_acc.png"))
-    print(f"Saved accuracy curve to {args.output_dir}/{prefix}_acc.png")
+    plt.savefig(os.path.join(args.output_dir, f"{filename}_acc.png"))
+    print(f"Saved accuracy curve to {args.output_dir}/{filename}_acc.png")
 
 
 if __name__ == '__main__':
