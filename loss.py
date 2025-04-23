@@ -36,13 +36,14 @@ def variance_aware_loss_from_batch(z, logits, labels, lambda_reg=0.02, lambda_cl
 
 def scheduled_variance_aware_loss(
     z, logits, labels,
-    current_epoch, total_epochs,
-    lambda_reg=0.02, lambda_cls=1.0,
-    ramp_up_frac: float = 0.67  # 从多少比例的 epoch 开始注入
+    alpha,              # 由外部传入的权重系数（例如上一轮 train/val Acc 平均值的平方）
+    lambda_reg=0.02,
+    lambda_cls=1.0
 ):
     eps = 1e-6
     min_var = 1e-1
-    # 1. 计算 class-wise μ, var（和原版一致）
+
+    # 1. 计算每个类别的均值和方差，并对方差下界截断
     unique = labels.unique()
     class_stats = {}
     for cl in unique:
@@ -51,28 +52,25 @@ def scheduled_variance_aware_loss(
         mu     = z_cl.mean(0)
         var    = torch.clamp(z_cl.var(0, unbiased=False) + eps, min=min_var)
         class_stats[int(cl)] = (mu, var)
+
+    # 2. 为每个样本收集对应的 mu, var
     mu_batch  = torch.stack([class_stats[int(lbl)][0] for lbl in labels])
     var_batch = torch.stack([class_stats[int(lbl)][1] for lbl in labels])
-    # 2. Ldist + Lreg
+
+    # 3. 马氏距离项 Ldist
     diff  = z - mu_batch
-    Ldist = 0.5 * (diff*diff / var_batch).sum(1).mean()
+    Ldist = 0.5 * (diff * diff / var_batch).sum(1).mean()
+
+    # 4. 方差惩罚项 Lreg：仅当 var < 1 时才惩罚
     Lreg  = torch.mean(torch.relu(-torch.log(var_batch)))
-    # 3. CE loss
-    ce = nn.CrossEntropyLoss()(logits, labels)
 
-    # 4. 计算 α
-    start_epoch = int(total_epochs * ramp_up_frac)
-    if current_epoch < start_epoch:
-        alpha = 0.0
-    else:
-        # linear progress in [0,1]
-        length = max(1, total_epochs - start_epoch)
-        progress = (current_epoch - start_epoch) / length
-        # 平滑：linear²  或者直接 linear，都可以
-        alpha = min(progress**2, 1.0)
+    # 5. 交叉熵分类损失
+    ce    = nn.CrossEntropyLoss()(logits, labels)
 
-    # 5. 最终 loss
+    # 6. 最终混合损失
+    #    lambda_cls * CE  +  alpha * (Ldist + lambda_reg * Lreg)
     loss = lambda_cls * ce + alpha * (Ldist + lambda_reg * Lreg)
+
     return loss, Ldist, Lreg, ce, alpha
 
 
