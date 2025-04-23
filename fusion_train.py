@@ -75,6 +75,9 @@ def train_and_evaluate(
     video_comb, audio_comb,
     weights_dir_visual, weights_dir_audio
 ):
+    # 最早开始监控的 epoch
+    MIN_MONITOR_EPOCH = 3
+
     # 载入预训练 backbone
     backbone_v = load_timesformer_backbone(
         os.path.join(weights_dir_visual,
@@ -95,12 +98,16 @@ def train_and_evaluate(
     best_R           = float('inf')
     best_val_acc_ce  = 0.0
     best_val_loss_ce = float('inf')
+    # 新增：用于 R 模式下的验证准确率监控
+    best_val_acc_R   = 0.0
 
     # Early-Stop 计数
     val_loss_counter = 0
     reg_counter      = 0
     ce_acc_no_imp    = 0
     ce_acc_req       = 0.03
+    # 新增：R 模式下的 val_acc 计数器
+    val_acc_counter  = 0
 
     aborted = False
     train_losses, val_losses = [], []
@@ -189,54 +196,58 @@ def train_and_evaluate(
                       f"Train Loss {train_losses[-1]:.4f}, Acc {train_accs[-1]:.4f} | "
                       f"Val Loss {val_loss:.4f}, Acc {val_acc:.4f} | R {r_str}")
 
-            # 5. 更新最优及计数
-            if R is None:
-                # Pure-CE
-                if val_loss < best_val_loss_ce:
-                    best_val_loss_ce = val_loss
-                    best_ckpt_wts    = copy.deepcopy(model.state_dict())
-                    best_epoch       = epoch
-                    val_loss_counter = 0
-                else:
-                    val_loss_counter += 1
+            # --- 5/6. 从 MIN_MONITOR_EPOCH 轮才开始更新最优 & Early-Stop ---
+            if epoch >= MIN_MONITOR_EPOCH:
+                # 更新最优及计数
+                if R is None:
+                    # Pure-CE 模式不变
+                    if val_loss < best_val_loss_ce:
+                        best_val_loss_ce = val_loss
+                        best_ckpt_wts    = copy.deepcopy(model.state_dict())
+                        best_epoch       = epoch
+                        val_loss_counter = 0
+                    else:
+                        val_loss_counter += 1
 
-                if val_acc >= best_val_acc_ce + ce_acc_req:
-                    best_val_acc_ce = val_acc
-                    best_ckpt_wts   = copy.deepcopy(model.state_dict())
-                    best_epoch      = epoch
-                    ce_acc_no_imp   = 0
+                    if val_acc >= best_val_acc_ce + ce_acc_req:
+                        best_val_acc_ce = val_acc
+                        best_ckpt_wts   = copy.deepcopy(model.state_dict())
+                        best_epoch      = epoch
+                        ce_acc_no_imp   = 0
+                    else:
+                        ce_acc_no_imp += 1
                 else:
-                    ce_acc_no_imp += 1
-            else:
-                # 带 R
-                if R < best_R:
-                    best_R        = R
-                    best_ckpt_wts = copy.deepcopy(model.state_dict())
-                    best_epoch    = epoch
-                    reg_counter   = 0
+                    # 带 R 模式：R 监控不变
+                    if R < best_R:
+                        best_R        = R
+                        best_ckpt_wts = copy.deepcopy(model.state_dict())
+                        best_epoch    = epoch
+                        reg_counter   = 0
+                    else:
+                        reg_counter += 1
+
+                    # 用 val_acc 代替 val_loss 监控
+                    if val_acc >= best_val_acc_R:
+                        best_val_acc_R = val_acc
+                        best_ckpt_wts  = copy.deepcopy(model.state_dict())
+                        best_epoch     = epoch
+                        val_acc_counter = 0
+                    else:
+                        val_acc_counter += 1
+
+                # Early-Stop 判定
+                if R is None:
+                    if ce_acc_no_imp >= P_acc:
+                        if accelerator.is_main_process:
+                            print(f"Early stopping (CE style) at epoch {epoch}.")
+                        break
                 else:
-                    reg_counter += 1
+                    if val_acc_counter >= P_acc or reg_counter >= P_reg:
+                        if accelerator.is_main_process:
+                            print(f"Early stopping (R style) at epoch {epoch}.")
+                        break
 
-                if val_loss < best_val_loss_ce:
-                    best_val_loss_ce = val_loss
-                    best_ckpt_wts    = copy.deepcopy(model.state_dict())
-                    best_epoch       = epoch
-                    val_loss_counter = 0
-                else:
-                    val_loss_counter += 1
-
-            # 6. Early-Stop 判定
-            if R is None:
-                if ce_acc_no_imp >= P_acc:
-                    if accelerator.is_main_process:
-                        print(f"Early stopping (CE style) at epoch {epoch}.")
-                    break
-            else:
-                if val_loss_counter >= P_acc or reg_counter >= P_reg:
-                    if accelerator.is_main_process:
-                        print(f"Early stopping (R style) at epoch {epoch}.")
-                    break
-
+            # 7. 更新 lr
             scheduler.step()
 
     except Exception:
