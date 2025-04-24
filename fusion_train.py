@@ -3,6 +3,7 @@
 
 import os
 import argparse
+import re
 import copy
 import traceback
 import torch
@@ -73,10 +74,16 @@ def train_and_evaluate(
     lambda_reg, lambda_cls,
     P_acc, P_reg,
     video_comb, audio_comb,
-    weights_dir_visual, weights_dir_audio
+    weights_dir_visual, weights_dir_audio,
+    lr_end,         # 新增：最小学习率
+    val_threshold   # 新增：精度触发阈值
 ):
     # 最早开始监控的 epoch
     MIN_MONITOR_EPOCH = 3
+
+    # R 模式下的忽略区间：R 在此区间时，不更新权重、不计数器、不早停
+    IGNORE_R_LOW  = 1.2
+    IGNORE_R_HIGH = 1.4
 
     # 载入预训练 backbone
     backbone_v = load_timesformer_backbone(
@@ -113,6 +120,9 @@ def train_and_evaluate(
     train_losses, val_losses = [], []
     train_accs, val_accs     = [], []
     Rs                       = []
+
+    # 控制何时直接使用 lr_end
+    use_min_lr = False
 
     try:
         for epoch in range(1, num_epochs + 1):
@@ -152,14 +162,14 @@ def train_and_evaluate(
                 optimizer.step()
 
                 preds = logits.argmax(dim=1)
-                tot_loss   += loss.item() * labels.size(0)
-                tot_corr   += (preds == labels).sum().item()
-                tot_samps  += labels.size(0)
+                tot_loss  += loss.item() * labels.size(0)
+                tot_corr  += (preds == labels).sum().item()
+                tot_samps += labels.size(0)
 
             train_losses.append(tot_loss / tot_samps)
             train_accs.append(tot_corr / tot_samps)
 
-            # 3. 验证阶段（加 tqdm）
+            # 3. 验证阶段
             model.eval()
             v_loss = v_corr = v_samps = 0
             for wavs, vids, labels in tqdm(
@@ -179,9 +189,9 @@ def train_and_evaluate(
                 )
                 loss = items[0]
                 preds = logits.argmax(dim=1)
-                v_loss    += loss.item() * labels.size(0)
-                v_corr    += (preds == labels).sum().item()
-                v_samps   += labels.size(0)
+                v_loss  += loss.item() * labels.size(0)
+                v_corr  += (preds == labels).sum().item()
+                v_samps += labels.size(0)
 
             val_loss = v_loss / v_samps
             val_acc  = v_corr / v_samps
@@ -198,9 +208,8 @@ def train_and_evaluate(
 
             # --- 5/6. 从 MIN_MONITOR_EPOCH 轮才开始更新最优 & Early-Stop ---
             if epoch >= MIN_MONITOR_EPOCH:
-                # 更新最优及计数
+                # Pure-CE 模式
                 if R is None:
-                    # Pure-CE 模式不变
                     if val_loss < best_val_loss_ce:
                         best_val_loss_ce = val_loss
                         best_ckpt_wts    = copy.deepcopy(model.state_dict())
@@ -216,39 +225,52 @@ def train_and_evaluate(
                         ce_acc_no_imp   = 0
                     else:
                         ce_acc_no_imp += 1
-                else:
-                    # 带 R 模式：R 监控不变
-                    if R < best_R:
-                        best_R        = R
-                        best_ckpt_wts = copy.deepcopy(model.state_dict())
-                        best_epoch    = epoch
-                        reg_counter   = 0
-                    else:
-                        reg_counter += 1
 
-                    # 用 val_acc 代替 val_loss 监控
-                    if val_acc >= best_val_acc_R:
-                        best_val_acc_R = val_acc
-                        best_ckpt_wts  = copy.deepcopy(model.state_dict())
-                        best_epoch     = epoch
-                        val_acc_counter = 0
-                    else:
-                        val_acc_counter += 1
-
-                # Early-Stop 判定
-                if R is None:
                     if ce_acc_no_imp >= P_acc:
                         if accelerator.is_main_process:
                             print(f"Early stopping (CE style) at epoch {epoch}.")
                         break
                 else:
-                    if val_acc_counter >= P_acc or reg_counter >= P_reg:
+                    # 如果 R 在忽略区间内，则跳过本轮监控
+                    if IGNORE_R_LOW < R < IGNORE_R_HIGH:
                         if accelerator.is_main_process:
-                            print(f"Early stopping (R style) at epoch {epoch}.")
-                        break
+                            print(f"Epoch {epoch}: R={R:.4f} is abnormal，epoch ignored.")
+                    else:
+                        # 正式的 R 模式更新 & 计数
+                        if R < best_R:
+                            best_R        = R
+                            best_ckpt_wts = copy.deepcopy(model.state_dict())
+                            best_epoch    = epoch
+                            reg_counter   = 0
+                        else:
+                            reg_counter += 1
+
+                        if val_acc >= best_val_acc_R:
+                            best_val_acc_R = val_acc
+                            best_ckpt_wts  = copy.deepcopy(model.state_dict())
+                            best_epoch     = epoch
+                            val_acc_counter = 0
+                        else:
+                            val_acc_counter += 1
+
+                        # Early-Stop 判定
+                        if val_acc_counter >= P_acc or reg_counter >= P_reg:
+                            if accelerator.is_main_process:
+                                print(f"Early stopping (R style) at epoch {epoch}.")
+                            break
+
+            # 在验证后，根据阈值决定学习率
+            if not use_min_lr and val_acc >= val_threshold:
+                use_min_lr = True
+                if accelerator.is_main_process:
+                    print(f"Val Acc reached {val_acc:.4f} ≥ {val_threshold:.2f}, switch to lr_end={lr_end}")
 
             # 7. 更新 lr
-            scheduler.step()
+            if use_min_lr:
+                for pg in optimizer.param_groups:
+                    pg['lr'] = lr_end
+            else:
+                scheduler.step()
 
     except Exception:
         aborted = True
@@ -272,32 +294,61 @@ def train_and_evaluate(
     return model, metrics
 
 
+
 def main():
     parser = argparse.ArgumentParser(description="Train multimodal fusion on RAVDESS")
-    parser.add_argument("--csv_file",   type=str,
+    parser.add_argument("--csv_file",      type=str,
                         default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel/multimodal-combination-1.csv")
-    parser.add_argument("--media_dir",  type=str,
+    parser.add_argument("--media_dir",     type=str,
                         default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
-    parser.add_argument("--output_dir", type=str,
+    parser.add_argument("--output_dir",    type=str,
                         default="/media/data1/ningtong/wzh/projects/Face-VII/weights")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--epochs",     type=int, default=25)
-    parser.add_argument("--lr",         type=float, default=1e-5)
-    parser.add_argument("--lr_end",     type=float, default=1e-6)
-    parser.add_argument("--num_frames", type=int, default=32)
-    parser.add_argument("--video_comb", type=int, default=1)
-    parser.add_argument("--audio_comb", type=int, default=1)
-    parser.add_argument("--loss_type",  choices=["ce","variance","scheduled"],
+    parser.add_argument("--batch_size",    type=int,   default=32)
+    parser.add_argument("--epochs",        type=int,   default=25)
+    parser.add_argument("--lr",            type=float, default=5e-6)
+    parser.add_argument("--lr_end",        type=float, default=2e-6)
+    parser.add_argument("--val_threshold", type=float, default=0.8,
+                        help="当 val_acc ≥ 阈值时直接切换到 lr_end")
+    parser.add_argument("--num_frames",    type=int,   default=32)
+    parser.add_argument("--video_comb",    type=int,   default=None)
+    parser.add_argument("--audio_comb",    type=int,   default=None)
+    parser.add_argument("--loss_type",     choices=["ce","variance","scheduled"],
                         default="scheduled")
-    parser.add_argument("--lambda_reg", type=float, default=0.6)
-    parser.add_argument("--lambda_cls", type=float, default=0.5)
-    parser.add_argument("--P_acc",      type=int, default=2)
-    parser.add_argument("--P_reg",      type=int, default=3)
+    parser.add_argument("--lambda_reg",    type=float, default=0.7)
+    parser.add_argument("--lambda_cls",    type=float, default=0.6)
+    parser.add_argument("--P_acc",         type=int,   default=5)
+    parser.add_argument("--P_reg",         type=int,   default=4)
     args = parser.parse_args()
 
+    # 自动从 csv_file 名称中提取 combination 编号
+    basename = os.path.basename(args.csv_file)
+    m = re.search(r'combination[-_]?(\d+)\.csv$', basename)
+    if m:
+        comb = int(m.group(1))
+        args.video_comb = comb if args.video_comb is None else args.video_comb
+        args.audio_comb = comb if args.audio_comb is None else args.audio_comb
+    else:
+        raise ValueError(f"无法从 csv 文件名 ‘{basename}’ 中识别 combination 编号")
+
+    # 打印要加载的文件路径
+    visual_wpath = os.path.join(
+        args.output_dir, "backbones", "visual",
+        f"openset_split_combination_{args.video_comb}_timesformer_backbone.pth"
+    )
+    audio_wpath = os.path.join(
+        args.output_dir, "backbones", "audio",
+        f"openset_split_combination_{args.audio_comb}_wav2vec_backbone.pth"
+    )
+    print(f"----------------------------------------------------------------------------")
+    print(f"CSV file:        {args.csv_file}")
+    print(f"Visual backbone: {visual_wpath}")
+    print(f"Audio backbone:  {audio_wpath}")
+    print(f"----------------------------------------------------------------------------")
+
     accelerator = Accelerator()
+
     raw_df = pd.read_csv(args.csv_file)
-    unique  = sorted(raw_df['emo_label'].unique())
+    unique = sorted(raw_df['emo_label'].unique())
     label_map = {lbl: i for i, lbl in enumerate(unique)}
 
     train_samples = list(zip(
@@ -331,8 +382,9 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultimodalTransformer(
-        modality_num=2, num_classes=len(label_map), num_layers=1
+        modality_num=2, num_classes=len(label_map), num_layers=2
     ).to(device)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr_end
@@ -366,8 +418,10 @@ def main():
         args.lambda_reg, args.lambda_cls,
         args.P_acc, args.P_reg,
         args.video_comb, args.audio_comb,
-        os.path.join(args.output_dir,"backbones","visual"),
-        os.path.join(args.output_dir,"backbones","audio")
+        os.path.join(args.output_dir, "backbones", "visual"),
+        os.path.join(args.output_dir, "backbones", "audio"),
+        args.lr_end,
+        args.val_threshold
     )
 
     if accelerator.is_main_process:
@@ -378,9 +432,9 @@ def main():
                          os.path.join(args.output_dir, f"{filename}.pth"))
         print(f"Saved model to {filename}.pth")
 
-        best_epoch = metrics["best_epoch"]
-        aborted    = metrics["aborted"]
-        epochs_ran = len(metrics["train_losses"])
+        best_epoch  = metrics["best_epoch"]
+        aborted     = metrics["aborted"]
+        epochs_ran  = len(metrics["train_losses"])
 
         # Loss 曲线
         plt.figure()
@@ -411,7 +465,7 @@ def main():
             if aborted: plt.title("Training aborted due to exception")
             plt.xlabel("Epoch"); plt.ylabel("R"); plt.legend()
         else:
-            plt.text(0.5,0.5,"R = N/A",ha="center",va="center")
+            plt.text(0.5,0.5,"R = N/A", ha="center", va="center")
             if aborted: plt.title("Training aborted due to exception")
             plt.axis("off")
         plt.savefig(os.path.join(args.output_dir, f"{filename}_R.png"))
