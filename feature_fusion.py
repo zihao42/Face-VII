@@ -70,6 +70,8 @@ class MultimodalTransformer(nn.Module):
                 nn.ReLU()
             ) for _ in range(self.n_modality)]
         )
+        # add to expose embed_dim --> avoid magic number
+        self.embed_dim = embed_dim
 
         self.layers = nn.ParameterList([ModalFusionBlock(embed_dim, num_heads, n_modality=self.n_modality)
                                         for _ in range(num_layers)])
