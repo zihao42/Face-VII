@@ -8,6 +8,6 @@
 .DS_Store
 temp.py
 test_datafolder/
-test_datafolder/
+debug_weights/
 *.wav
 *.mp4
