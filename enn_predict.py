@@ -5,9 +5,9 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from data import COMBINATION_SPLITS, load_video_frames, load_audio_file
-from audio_feature_extract import load_audio_backbone, extract_audio_features
-from visual_feature_extract import load_timesformer_backbone, extract_video_features
-from fusion_model import MultimodalTransformer
+from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone
+from visual_feature_extract import load_timesformer_backbone, extract_frame_features_from_backbone
+from feature_fusion import MultimodalTransformer
 from enn_head import EvidentialClassificationHead
 
 # Emotion annotation mapping
@@ -68,8 +68,8 @@ def predict_batch(vids, auds, models, threshold=0.5):
     B = vids.size(0)
     with torch.no_grad():
         # features
-        v_feats = extract_video_features(vids.to(device), video_bb).mean(dim=1)
-        a_feats = extract_audio_features(auds.to(device), audio_bb, target_frames=v_feats.shape[1]).mean(dim=1)
+        v_feats = extract_frame_features_from_backbone(vids.to(device), video_bb).mean(dim=1)
+        a_feats = extract_audio_features_from_backbone(auds.to(device), audio_bb, target_frames=v_feats.shape[1]).mean(dim=1)
         # fusion
         logits, fused_feats = fusion([v_feats.unsqueeze(1), a_feats.unsqueeze(1)])
         # evidential

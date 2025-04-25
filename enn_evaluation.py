@@ -6,7 +6,7 @@ import torch
 import matplotlib.pyplot as plt
 from torchmetrics.classification import AUROC
 from torchmetrics.functional import auc as tm_auc
-from data import get_openset_dataloaders
+from data import get_openset_dataloaders, COMBINATION_SPLITS
 from predict import load_models, predict_batch
 
 BATCH_SIZE = 4
