@@ -83,7 +83,7 @@ def train_and_evaluate(
 
     # R 模式下的忽略区间：R 在此区间时，不更新权重、不计数器、不早停
     IGNORE_R_LOW  = 1.2
-    IGNORE_R_HIGH = 1.4
+    IGNORE_R_HIGH = 1.8
 
     # 载入预训练 backbone
     backbone_v = load_timesformer_backbone(
@@ -236,7 +236,7 @@ def train_and_evaluate(
                         if accelerator.is_main_process:
                             print(f"Epoch {epoch}: R={R:.4f} is abnormal，epoch ignored.")
                     else:
-                        # 正式的 R 模式更新 & 计数
+                        # 正式的 R 模式更新 & 计数：仅基于 R 值选最优
                         if R < best_R:
                             best_R        = R
                             best_ckpt_wts = copy.deepcopy(model.state_dict())
@@ -245,10 +245,11 @@ def train_and_evaluate(
                         else:
                             reg_counter += 1
 
+                        # 验证准确率容忍 0.03，低于阈值以内不计入 counter
                         if val_acc >= best_val_acc_R:
                             best_val_acc_R = val_acc
-                            best_ckpt_wts  = copy.deepcopy(model.state_dict())
-                            best_epoch     = epoch
+                            val_acc_counter = 0
+                        elif val_acc >= best_val_acc_R - ce_acc_req:
                             val_acc_counter = 0
                         else:
                             val_acc_counter += 1
@@ -292,7 +293,6 @@ def train_and_evaluate(
         "aborted":      aborted
     }
     return model, metrics
-
 
 
 def main():
