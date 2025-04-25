@@ -5,11 +5,11 @@ import torch
 import matplotlib.pyplot as plt
 from torchmetrics import AUROC
 from torchmetrics.functional import auc as tm_auc
-from data import get_openset_dataloaders, COMBINATION_SPLITS, generate_label_map, inverse_label_map
+from data import get_openset_dataloaders
 from audio_feature_extract import load_audio_backbone
 from visual_feature_extract import load_timesformer_backbone
 from feature_fusion import MultimodalTransformer
-from predict import predict_batch  # ← Import batch predictor
+from predict import predict_batch, generate_label_map, inverse_label_map  # ← Import batch predictor
 
 BATCH_SIZE = 4
 
@@ -34,6 +34,7 @@ def evaluate_combination(comb, data_dir,
         modality_num=2,
         num_classes=len(label_map),
         input_dim=video_bb.config.hidden_size,
+        num_layers=2,
         feature_only=False
     )
     fusion_model.load_state_dict(torch.load(clf_w, map_location=device))
