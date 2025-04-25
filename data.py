@@ -48,6 +48,31 @@ def collate_fn_audio(batch):
         padded.append(nn.functional.pad(w, (0, pad_len), mode='constant', value=0))
     return torch.stack(padded, dim=0), torch.tensor(labels)
 
+def collate_fn_default(batch):
+    """
+    Collate function for both video and audio: 
+    - stacks video tensors (all are [num_frames, C, H, W]) into [B, num_frames, C, H, W]
+    - pads each audio tensor (shape [num_frames, L_i]) along dim=1 to the batch max length, 
+      then stacks into [B, num_frames, max_L]
+    """
+    samples, labels = zip(*batch)
+
+    # Stack video
+    video_batch = torch.stack([s['video'] for s in samples], dim=0)
+
+    # Collect and pad audio
+    waveforms = [s['audio'] for s in samples]  # each is [num_frames, L_i]
+    max_len = max(w.shape[1] for w in waveforms)
+    padded_waveforms = []
+    for w in waveforms:
+        pad_len = max_len - w.shape[1]
+        padded_waveforms.append(nn.functional.pad(w, (0, pad_len), mode='constant', value=0))
+    audio_batch = torch.stack(padded_waveforms, dim=0)
+
+    return {'video': video_batch, 'audio': audio_batch}, torch.tensor(labels)
+
+
+
 #############################
 # Parsing filename → metadata
 #############################
@@ -243,45 +268,15 @@ def get_openset_dataloaders(data_dir, csv_dir,
     Val loader: all category=='test' & emo_label != 8.
     Test loader: union of val set and all emo_label == 8.
     """
-    csv_path = os.path.join(csv_dir, f"multimodal-{combination}.csv")
+    # Load and split CSV
+    csv_path = os.path.join(csv_dir, f"multimodal-combination-{combination}.csv")
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"CSV not found: {csv_path}")
-
     df = pd.read_csv(csv_path)
-    # Train: all 'train'
     train_df = df[df.category == 'train'].reset_index(drop=True)
-    # Val: test-known
     val_df   = df[(df.category == 'test') & (df.emo_label != 8)].reset_index(drop=True)
-    # Unknown
     unk_df   = df[(df.category == 'test') & (df.emo_label == 8)].reset_index(drop=True)
-    # Test: val + unknown
     test_df  = pd.concat([val_df, unk_df]).reset_index(drop=True)
-
-    # Build datasets
-    train_ds = RAVDESSOpenSetDataset(data_dir,
-                                    train_df.video_filename.tolist(),
-                                    train_df.audio_filename.tolist(),
-                                    train_df.emo_label.tolist(),
-                                    modality, num_frames,
-                                    video_transform, audio_transform,
-                                    target_sample_rate)
-    val_ds   = RAVDESSOpenSetDataset(data_dir,
-                                    val_df.video_filename.tolist(),
-                                    val_df.audio_filename.tolist(),
-                                    val_df.emo_label.tolist(),
-                                    modality, num_frames,
-                                    video_transform, audio_transform,
-                                    target_sample_rate)
-    test_ds  = RAVDESSOpenSetDataset(data_dir,
-                                    test_df.video_filename.tolist(),
-                                    test_df.audio_filename.tolist(),
-                                    test_df.emo_label.tolist(),
-                                    modality, num_frames,
-                                    video_transform, audio_transform,
-                                    target_sample_rate)
-
-    # Collate only for audio
-    collate = collate_fn_audio if modality == 'audio' else None
 
     # Default video transform if none
     if video_transform is None:
@@ -293,6 +288,36 @@ def get_openset_dataloaders(data_dir, csv_dir,
                                  std=[0.229,0.224,0.225])
         ])
 
+    # Build datasets
+    train_ds = RAVDESSOpenSetDataset(data_dir,
+                                     train_df.video_filename.tolist(),
+                                     train_df.audio_filename.tolist(),
+                                     train_df.emo_label.tolist(),
+                                     modality, num_frames,
+                                     video_transform, audio_transform,
+                                     target_sample_rate)
+    val_ds   = RAVDESSOpenSetDataset(data_dir,
+                                     val_df.video_filename.tolist(),
+                                     val_df.audio_filename.tolist(),
+                                     val_df.emo_label.tolist(),
+                                     modality, num_frames,
+                                     video_transform, audio_transform,
+                                     target_sample_rate)
+    test_ds  = RAVDESSOpenSetDataset(data_dir,
+                                     test_df.video_filename.tolist(),
+                                     test_df.audio_filename.tolist(),
+                                     test_df.emo_label.tolist(),
+                                     modality, num_frames,
+                                     video_transform, audio_transform,
+                                     target_sample_rate)
+
+    # Choose collate function: audio uses padding, others use default stack
+    if modality == 'audio':
+        collate = collate_fn_audio
+    else:
+        collate = collate_fn_default
+
+    # Create DataLoaders with consistent collate_fn
     train_loader = DataLoader(train_ds, batch_size=batch_size,
                               shuffle=True, num_workers=num_workers,
                               collate_fn=collate)
@@ -304,3 +329,5 @@ def get_openset_dataloaders(data_dir, csv_dir,
                               collate_fn=collate)
 
     return train_loader, val_loader, test_loader
+
+

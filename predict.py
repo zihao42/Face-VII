@@ -7,7 +7,7 @@ import torchvision.transforms as transforms
 from PIL import Image
 
 from data import COMBINATION_SPLITS, load_video_frames, load_audio_file
-from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone
+from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone_eva
 from visual_feature_extract import load_timesformer_backbone, extract_frame_features_from_backbone
 from feature_fusion import MultimodalTransformer  # Cross-modal transformer
 
@@ -58,7 +58,7 @@ def predict_batch(videos, audios,
 
     with torch.no_grad():
         v_feats = extract_frame_features_from_backbone(videos, video_bb)
-        a_feats = extract_audio_features_from_backbone(audios, audio_bb, target_frames=v_feats.shape[1])
+        a_feats = extract_audio_features_from_backbone_eva(audios, audio_bb, target_frames=v_feats.shape[1])
         modal_data = [v_feats, a_feats]
         logits, _ = fusion_model(modal_data)
         probs = torch.softmax(logits, dim=1)

@@ -68,3 +68,27 @@ def extract_audio_features_from_backbone(
     pooled = nn.functional.adaptive_avg_pool1d(x, target_frames)  # [B, D, target_frames]
     features = pooled.transpose(1, 2)               # [B, target_frames, D]
     return features
+
+def extract_audio_features_from_backbone_eva(
+    audio_batch: torch.Tensor,
+    backbone: Wav2Vec2Model,
+    target_frames: int = 32
+) -> torch.Tensor:
+    """
+    使用已加载 backbone（只加载一次）提取音频特征并池化到 target_frames。
+    支持传入 [B, 1, 1, T] 或 [B, F, L] 的多余维度，自动 reshape 到 [B, T_total]。
+    """
+    device = next(backbone.parameters()).device
+    # 把所有非 batch 维度都合并成一条长的时间序列
+    # e.g. [B, 1, 1, T] -> [B, T],   [B, F, L] -> [B, F*L]
+    B = audio_batch.size(0)
+    audio_flat = audio_batch.view(B, -1).to(device)  # [B, T_total]
+
+    # Wav2Vec2 期望输入是 2D [B, seq_len]
+    outputs = backbone(audio_flat).last_hidden_state  # [B, seq_len', D]
+
+    # 按 target_frames 池化到固定帧数
+    x = outputs.transpose(1, 2)                   # [B, D, seq_len']
+    pooled = nn.functional.adaptive_avg_pool1d(x, target_frames)  # [B, D, target_frames]
+    features = pooled.transpose(1, 2)             # [B, target_frames, D]
+    return features
