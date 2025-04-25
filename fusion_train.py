@@ -86,7 +86,7 @@ def train_and_evaluate(
 
     # R 模式下的忽略区间：R 在此区间时，不更新权重、不计数器、不早停
     IGNORE_R_LOW  = 1.2
-    IGNORE_R_HIGH = 1.4
+    IGNORE_R_HIGH = 1.8
 
     # 载入预训练 backbone
     backbone_v = load_timesformer_backbone(
@@ -270,8 +270,8 @@ def train_and_evaluate(
 
                         if val_acc >= best_val_acc_R:
                             best_val_acc_R = val_acc
-                            best_ckpt_wts  = copy.deepcopy(model.state_dict())
-                            best_epoch     = epoch
+                            val_acc_counter = 0
+                        elif val_acc >= best_val_acc_R - ce_acc_req:
                             val_acc_counter = 0
                         else:
                             val_acc_counter += 1
