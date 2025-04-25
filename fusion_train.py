@@ -20,7 +20,9 @@ from data import load_video_frames, load_audio_file
 from feature_fusion import MultimodalTransformer
 from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone
 from visual_feature_extract import load_timesformer_backbone, extract_frame_features_from_backbone
-from loss import variance_aware_loss_from_batch, scheduled_variance_aware_loss
+from enn_head import EvidentialClassificationHead
+# 引入自定义 loss
+from loss import variance_aware_loss_from_batch, scheduled_variance_aware_loss, evidential_loss_from_batch
 
 
 def collate_fn_modality(batch):
@@ -76,7 +78,8 @@ def train_and_evaluate(
     video_comb, audio_comb,
     weights_dir_visual, weights_dir_audio,
     lr_end,         # 新增：最小学习率
-    val_threshold   # 新增：精度触发阈值
+    val_threshold,  # 新增：精度触发阈值
+    enn_head = None
 ):
     # 最早开始监控的 epoch
     MIN_MONITOR_EPOCH = 3
@@ -144,24 +147,34 @@ def train_and_evaluate(
                 with torch.no_grad():
                     feat_v = extract_frame_features_from_backbone(vids, backbone_v)
                     feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
-                logits, z = model([feat_a, feat_v])
+                if enn_head is not None:
+                    fused_feat = model([feat_a, feat_v])
+                    evidence = enn_head(fused_feat)
+                    loss = evidential_loss_from_batch(evidence, labels)
+                    alpha = evidence + 1.0
+                    probs = alpha / alpha.sum(dim=1, keepdim=True)
+                    preds = torch.argmax(probs, dim=1)
+                    # as enn loss only return 1 item, won't use R mode
+                    items = loss_fn(evidence, labels)
+                else:
+                    logits, z = model([feat_a, feat_v])
+                    items = (
+                        loss_fn(logits, z, labels, alpha)
+                        if loss_type == "scheduled"
+                        else loss_fn(logits, z, labels, epoch)
+                    )
+                    loss = items[0]
+                    preds = logits.argmax(dim=1)
 
-                items = (
-                    loss_fn(logits, z, labels, alpha)
-                    if loss_type == "scheduled"
-                    else loss_fn(logits, z, labels, epoch)
-                )
-                loss = items[0]
                 if compute_R and len(items) >= 3:
                     R = items[1].item() + lambda_reg * items[2].item()
                 else:
                     R = None
-
+            
                 accelerator.backward(loss)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
-                preds = logits.argmax(dim=1)
                 tot_loss  += loss.item() * labels.size(0)
                 tot_corr  += (preds == labels).sum().item()
                 tot_samps += labels.size(0)
@@ -181,14 +194,24 @@ def train_and_evaluate(
                 with torch.no_grad():
                     feat_v = extract_frame_features_from_backbone(vids, backbone_v)
                     feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
+    
+                if enn_head is not None:
+                    fused_feat = model([feat_a, feat_v])
+                    evidence = enn_head(fused_feat)
+                    loss = evidential_loss_from_batch(evidence, labels)
+                    alpha = evidence + 1.0
+                    probs = alpha / alpha.sum(dim=1, keepdim=True)
+                    preds = torch.argmax(probs, dim=1)
+                else:
                     logits, z = model([feat_a, feat_v])
-                items = (
-                    loss_fn(logits, z, labels, alpha)
-                    if loss_type == "scheduled"
-                    else loss_fn(logits, z, labels, epoch)
-                )
-                loss = items[0]
-                preds = logits.argmax(dim=1)
+                    items = (
+                            loss_fn(logits, z, labels, alpha)
+                        if loss_type == "scheduled"
+                        else loss_fn(logits, z, labels, epoch)
+                    )
+                    loss = items[0]
+                    preds = logits.argmax(dim=1)
+
                 v_loss  += loss.item() * labels.size(0)
                 v_corr  += (preds == labels).sum().item()
                 v_samps += labels.size(0)
@@ -236,7 +259,7 @@ def train_and_evaluate(
                         if accelerator.is_main_process:
                             print(f"Epoch {epoch}: R={R:.4f} is abnormal，epoch ignored.")
                     else:
-                        # 正式的 R 模式更新 & 计数：仅基于 R 值选最优
+                        # 正式的 R 模式更新 & 计数
                         if R < best_R:
                             best_R        = R
                             best_ckpt_wts = copy.deepcopy(model.state_dict())
@@ -245,7 +268,6 @@ def train_and_evaluate(
                         else:
                             reg_counter += 1
 
-                        # 验证准确率容忍 0.03，低于阈值以内不计入 counter
                         if val_acc >= best_val_acc_R:
                             best_val_acc_R = val_acc
                             val_acc_counter = 0
@@ -312,7 +334,7 @@ def main():
     parser.add_argument("--num_frames",    type=int,   default=32)
     parser.add_argument("--video_comb",    type=int,   default=None)
     parser.add_argument("--audio_comb",    type=int,   default=None)
-    parser.add_argument("--loss_type",     choices=["ce","variance","scheduled"],
+    parser.add_argument("--loss_type",     choices=["ce","variance","scheduled", "evi"],
                         default="scheduled")
     parser.add_argument("--lambda_reg",    type=float, default=0.7)
     parser.add_argument("--lambda_cls",    type=float, default=0.6)
@@ -382,10 +404,21 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultimodalTransformer(
-        modality_num=2, num_classes=len(label_map), num_layers=2
+        modality_num=2, num_classes=len(label_map), num_layers=2, feature_only=(args.loss_type == "evi")
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    # enn head
+    if args.loss_type == "evi":
+        enn_head = EvidentialClassificationHead(model.embed_dim * model.n_modality, len(label_map), use_bn=True).to(device)
+    else:  
+        enn_head = None
+
+    # optimizer
+    if args.loss_type == "evi":
+        optimizer = torch.optim.AdamW(list(model.parameters()) + list(enn_head.parameters()), lr=args.lr)
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr_end
     )
@@ -403,14 +436,13 @@ def main():
             lambda_reg=args.lambda_reg,
             lambda_cls=args.lambda_cls
         )
+    elif args.loss_type == "evi":
+        loss_fn = lambda evidence, labels: evidential_loss_from_batch(evidence, labels)
     else:
-        loss_fn = lambda logits, z, labels, alpha: scheduled_variance_aware_loss(
-            z, logits, labels,
-            alpha,
-            lambda_reg=args.lambda_reg,
-            lambda_cls=args.lambda_cls
-        )
+        enn_head = None
+        loss_fn = lambda logits, z, labels, epoch: scheduled_variance_aware_loss(z, logits, labels, current_epoch=epoch, total_epochs=args.epochs, lambda_reg=args.lambda_reg, lambda_cls=args.lambda_cls)
 
+    # 训练
     trained_model, metrics = train_and_evaluate(
         model, train_loader, val_loader, loss_fn,
         optimizer, scheduler, device, accelerator,
@@ -421,15 +453,22 @@ def main():
         os.path.join(args.output_dir, "backbones", "visual"),
         os.path.join(args.output_dir, "backbones", "audio"),
         args.lr_end,
-        args.val_threshold
+        args.val_threshold,
+        enn_head=enn_head
     )
 
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
         prefix   = os.path.splitext(os.path.basename(args.csv_file))[0]
         filename = f"{prefix}_{args.loss_type}"
-        accelerator.save(trained_model.state_dict(),
-                         os.path.join(args.output_dir, f"{filename}.pth"))
+        if args.loss_type == "evi":
+            accelerator.save({
+                    "model": trained_model.state_dict(),
+                    "enn_head": enn_head.state_dict()
+                }, os.path.join(args.output_dir, f"{filename}.pth"))
+        else:
+            accelerator.save(trained_model.state_dict(),
+                             os.path.join(args.output_dir, f"{filename}.pth"))
         print(f"Saved model to {filename}.pth")
 
         best_epoch  = metrics["best_epoch"]
