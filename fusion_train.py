@@ -104,7 +104,8 @@ def train_and_evaluate(
 
     # 最优 checkpoint & epoch
     best_ckpt_wts    = None
-    best_epoch       = None
+    best_enn_wts     = None
+    best_epoch       = 1     # 修改：将默认最优 epoch 设为 1，避免 None 导致绘图出错
     best_R           = float('inf')
     best_val_acc_ce  = 0.0
     best_val_loss_ce = float('inf')
@@ -236,6 +237,8 @@ def train_and_evaluate(
                     if val_loss < best_val_loss_ce:
                         best_val_loss_ce = val_loss
                         best_ckpt_wts    = copy.deepcopy(model.state_dict())
+                        if enn_head is not None:
+                            best_enn_wts = copy.deepcopy(enn_head.state_dict())
                         best_epoch       = epoch
                         val_loss_counter = 0
                     else:
@@ -244,14 +247,15 @@ def train_and_evaluate(
                     if val_acc >= best_val_acc_ce + ce_acc_req:
                         best_val_acc_ce = val_acc
                         best_ckpt_wts   = copy.deepcopy(model.state_dict())
+                        if enn_head is not None:
+                            best_enn_wts = copy.deepcopy(enn_head.state_dict())
                         best_epoch      = epoch
                         ce_acc_no_imp   = 0
                     else:
                         ce_acc_no_imp += 1
 
                     if ce_acc_no_imp >= P_acc:
-                        if accelerator.is_main_process:
-                            print(f"Early stopping (CE style) at epoch {epoch}.")
+                        print(f"Early stopping (CE) at epoch {epoch}.")
                         break
                 else:
                     # 如果 R 在忽略区间内，则跳过本轮监控
@@ -260,21 +264,24 @@ def train_and_evaluate(
                             print(f"Epoch {epoch}: R={R:.4f} is abnormal，epoch ignored.")
                     else:
                         # 正式的 R 模式更新 & 计数
-                        if R < best_R:
-                            best_R        = R
-                            best_ckpt_wts = copy.deepcopy(model.state_dict())
-                            best_epoch    = epoch
-                            reg_counter   = 0
-                        else:
-                            reg_counter += 1
+                        if not (IGNORE_R_LOW < R < IGNORE_R_HIGH):
+                            if R < best_R:
+                                best_R        = R
+                                best_ckpt_wts = copy.deepcopy(model.state_dict())
+                                if enn_head is not None:
+                                    best_enn_wts = copy.deepcopy(enn_head.state_dict())
+                                best_epoch    = epoch
+                                reg_counter   = 0
+                            else:
+                                reg_counter += 1
 
-                        if val_acc >= best_val_acc_R:
-                            best_val_acc_R = val_acc
-                            val_acc_counter = 0
-                        elif val_acc >= best_val_acc_R - ce_acc_req:
-                            val_acc_counter = 0
-                        else:
-                            val_acc_counter += 1
+                            if val_acc >= best_val_acc_R:
+                                best_val_acc_R = val_acc
+                                val_acc_counter = 0
+                            elif val_acc >= best_val_acc_R - ce_acc_req:
+                                val_acc_counter = 0
+                            else:
+                                val_acc_counter += 1
 
                         # Early-Stop 判定
                         if val_acc_counter >= P_acc or reg_counter >= P_reg:
@@ -304,6 +311,8 @@ def train_and_evaluate(
     # 恢复最优
     if best_ckpt_wts is not None:
         model.load_state_dict(best_ckpt_wts)
+        if enn_head is not None and best_enn_wts is not None:
+            enn_head.load_state_dict(best_enn_wts)
 
     metrics = {
         "train_losses": train_losses,
@@ -327,7 +336,7 @@ def main():
                         default="/media/data1/ningtong/wzh/projects/Face-VII/weights")
     parser.add_argument("--batch_size",    type=int,   default=32)
     parser.add_argument("--epochs",        type=int,   default=25)
-    parser.add_argument("--lr",            type=float, default=5e-6)
+    parser.add_argument("--lr",            type=float, default=6e-6)
     parser.add_argument("--lr_end",        type=float, default=2e-6)
     parser.add_argument("--val_threshold", type=float, default=0.8,
                         help="当 val_acc ≥ 阈值时直接切换到 lr_end")
@@ -337,12 +346,12 @@ def main():
     parser.add_argument("--loss_type",     choices=["ce","variance","scheduled", "evi"],
                         default="scheduled")
     parser.add_argument("--lambda_reg",    type=float, default=0.7)
-    parser.add_argument("--lambda_cls",    type=float, default=0.6)
-    parser.add_argument("--P_acc",         type=int,   default=5)
-    parser.add_argument("--P_reg",         type=int,   default=4)
+    parser.add_argument("--lambda_cls",    type=float, default=0.55)
+    parser.add_argument("--P_acc",         type=int,   default=4)
+    parser.add_argument("--P_reg",         type=int,   default=3)
     args = parser.parse_args()
 
-    # 自动从 csv_file 名称中提取 combination 编号
+    # 自动从 csv_file 名称中提取 combination 编号 (保持不变)
     basename = os.path.basename(args.csv_file)
     m = re.search(r'combination[-_]?(\d+)\.csv$', basename)
     if m:
@@ -352,37 +361,45 @@ def main():
     else:
         raise ValueError(f"无法从 csv 文件名 ‘{basename}’ 中识别 combination 编号")
 
-    # 打印要加载的文件路径
-    visual_wpath = os.path.join(
-        args.output_dir, "backbones", "visual",
-        f"openset_split_combination_{args.video_comb}_timesformer_backbone.pth"
-    )
-    audio_wpath = os.path.join(
-        args.output_dir, "backbones", "audio",
-        f"openset_split_combination_{args.audio_comb}_wav2vec_backbone.pth"
-    )
-    print(f"----------------------------------------------------------------------------")
+    print("----------------------------------------------------------------------------")
     print(f"CSV file:        {args.csv_file}")
-    print(f"Visual backbone: {visual_wpath}")
-    print(f"Audio backbone:  {audio_wpath}")
-    print(f"----------------------------------------------------------------------------")
+    print(f"Visual backbone: {os.path.join(args.output_dir, 'backbones', 'visual', f'openset_split_combination_{args.video_comb}_timesformer_backbone.pth')}")
+    print(f"Audio backbone:  {os.path.join(args.output_dir, 'backbones', 'audio',  f'openset_split_combination_{args.audio_comb}_wav2vec_backbone.pth')}")
+    print("----------------------------------------------------------------------------")
 
     accelerator = Accelerator()
 
+    # 读取原始 CSV
     raw_df = pd.read_csv(args.csv_file)
-    unique = sorted(raw_df['emo_label'].unique())
-    label_map = {lbl: i for i, lbl in enumerate(unique)}
 
+    # 按照子集筛选 train/val
+    train_df = raw_df[raw_df.category == "train"]
+    val_df   = raw_df[(raw_df.category == "test") & (raw_df.emo_label != 8)]
+
+    # —— 修改点：根据 train/val 子集生成 label_map —— 
+    labels_train   = set(train_df['emo_label'])
+    labels_val     = set(val_df['emo_label'])
+    unique_labels  = sorted(labels_train.union(labels_val))
+    label_map      = {lbl: i for i, lbl in enumerate(unique_labels)}
+
+    # 打印检查 label_map 映射及类别数
+    print(f"Label map: {label_map}")
+    print(f"Number of labels: {len(label_map)}")
+    # —— 修改点结束 —— 
+
+    # 构造 sample 列表
     train_samples = list(zip(
-        raw_df[raw_df.category=="train"].audio_filename,
-        raw_df[raw_df.category=="train"].video_filename,
-        raw_df[raw_df.category=="train"].emo_label
+        train_df.audio_filename,
+        train_df.video_filename,
+        train_df.emo_label
     ))
-    val_df = raw_df[(raw_df.category=="test") & (raw_df.emo_label!=8)]
     val_samples = list(zip(
-        val_df.audio_filename, val_df.video_filename, val_df.emo_label
+        val_df.audio_filename,
+        val_df.video_filename,
+        val_df.emo_label
     ))
 
+    # 其余部分保持不变：DataLoader、模型、训练流程等
     video_transform = T.Compose([
         T.Resize((224,224)),
         T.ToTensor(),
@@ -404,18 +421,24 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultimodalTransformer(
-        modality_num=2, num_classes=len(label_map), num_layers=2, feature_only=(args.loss_type == "evi")
+        modality_num=2, num_classes=len(label_map),
+        num_layers=2, feature_only=(args.loss_type == "evi")
     ).to(device)
 
-    # enn head
     if args.loss_type == "evi":
-        enn_head = EvidentialClassificationHead(model.embed_dim * model.n_modality, len(label_map), use_bn=True).to(device)
-    else:  
+        enn_head = EvidentialClassificationHead(
+            model.embed_dim * model.n_modality,
+            len(label_map),
+            use_bn=True
+        ).to(device)
+    else:
         enn_head = None
 
-    # optimizer
     if args.loss_type == "evi":
-        optimizer = torch.optim.AdamW(list(model.parameters()) + list(enn_head.parameters()), lr=args.lr)
+        optimizer = torch.optim.AdamW(
+            list(model.parameters()) + list(enn_head.parameters()),
+            lr=args.lr
+        )
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -428,8 +451,7 @@ def main():
     )
 
     if args.loss_type == "ce":
-        loss_fn = lambda logits, z, labels, *_: (
-            nn.CrossEntropyLoss()(logits, labels),)
+        loss_fn = lambda logits, z, labels, *_: (nn.CrossEntropyLoss()(logits, labels),)
     elif args.loss_type == "variance":
         loss_fn = lambda logits, z, labels, *_: variance_aware_loss_from_batch(
             z, logits, labels,
@@ -438,11 +460,16 @@ def main():
         )
     elif args.loss_type == "evi":
         loss_fn = lambda evidence, labels: evidential_loss_from_batch(evidence, labels)
-    else:
+    else:  # scheduled
         enn_head = None
-        loss_fn = lambda logits, z, labels, epoch: scheduled_variance_aware_loss(z, logits, labels, current_epoch=epoch, total_epochs=args.epochs, lambda_reg=args.lambda_reg, lambda_cls=args.lambda_cls)
+        # 修改：调整 lambda 签名和调用方式，按正确顺序传入 alpha 而不是 current_epoch/total_epochs
+        loss_fn = lambda logits, z, labels, alpha: scheduled_variance_aware_loss(
+            z, logits, labels,
+            alpha,
+            lambda_reg=args.lambda_reg,
+            lambda_cls=args.lambda_cls
+        )
 
-    # 训练
     trained_model, metrics = train_and_evaluate(
         model, train_loader, val_loader, loss_fn,
         optimizer, scheduler, device, accelerator,
