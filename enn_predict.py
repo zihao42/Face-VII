@@ -1,4 +1,4 @@
-# predict.py
+# enn_predict.py
 
 import argparse
 import torch
@@ -27,10 +27,12 @@ def inverse_label_map(label_map):
     return {v: k for k, v in label_map.items()}
 
 
-def load_models(combination, video_w, audio_w, fusion_w,
+def load_models(combination, video_w, audio_w, ckpt_w,
                 input_dim=768, embed_dim=128, num_heads=8, num_layers=1):
     """Load video/audio backbones, fusion transformer, and ENN head."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # for local testing
+    # device = torch.device("cpu")
     # Backbones
     video_bb = load_timesformer_backbone(video_w, device)
     audio_bb = load_audio_backbone(audio_w, device)
@@ -39,22 +41,23 @@ def load_models(combination, video_w, audio_w, fusion_w,
     fusion = MultimodalTransformer(
         modality_num=2,
         num_classes=num_known,
-        feature_only=False,
+        feature_only=True,
         input_dim=input_dim,
         embed_dim=embed_dim,
         num_heads=num_heads,
-        num_layers=num_layers
+        num_layers=2
     )
-    fusion.load_state_dict(torch.load(fusion_w, map_location=device))
+    ckpt = torch.load(ckpt_w, map_location=device)
+    fusion.load_state_dict(ckpt["model"])
     fusion.to(device).eval()
     # Evidential head on fused features
     enn_head = EvidentialClassificationHead(embed_dim * 2, num_known, use_bn=True)
-    enn_head.load_state_dict(torch.load(enn_w, map_location=device))
+    enn_head.load_state_dict(ckpt["enn_head"])
     enn_head.to(device).eval()
     # Label maps
     label_map = generate_label_map(combination)
     inv_map = inverse_label_map(label_map)
-    return video_bb, audio_bb, fusion, label_map, inv_map, device
+    return video_bb, audio_bb, fusion, label_map, inv_map, device, enn_head
 
 
 def predict_batch(vids, auds, models, threshold=0.5):
@@ -64,14 +67,14 @@ def predict_batch(vids, auds, models, threshold=0.5):
     auds: Tensor [B, ...] raw waveform
     models: tuple(video_bb, audio_bb, fusion, enn_head, label_map, inv_map, device)
     """
-    video_bb, audio_bb, fusion, label_map, inv_map, device = models
+    video_bb, audio_bb, fusion, label_map, inv_map, device, enn_head = models
     B = vids.size(0)
     with torch.no_grad():
         # features
         v_feats = extract_frame_features_from_backbone(vids.to(device), video_bb).mean(dim=1)
         a_feats = extract_audio_features_from_backbone(auds.to(device), audio_bb, target_frames=v_feats.shape[1]).mean(dim=1)
         # fusion
-        logits, fused_feats = fusion([v_feats.unsqueeze(1), a_feats.unsqueeze(1)])
+        fused_feats = fusion([v_feats.unsqueeze(1), a_feats.unsqueeze(1)])
         # evidential
         evidence = enn_head(fused_feats)
         alpha = evidence + 1.0
@@ -90,9 +93,9 @@ def predict_batch(vids, auds, models, threshold=0.5):
 
 
 def predict_one(video_path, audio_path, combination,
-                video_w, audio_w, fusion_w, enn_w,
+                video_w, audio_w, ckpt_w,
                 threshold):
-    models = load_models(combination, video_w, audio_w, fusion_w, enn_w)
+    models = load_models(combination, video_w, audio_w, ckpt_w)
     # preprocess same as batch but single
     vid = load_video_frames(video_path, num_frames=32,
                             transform=transforms.Compose([

@@ -1,4 +1,4 @@
-# evaluation.py
+# enn_evaluation.py
 
 import os
 import glob
@@ -20,7 +20,7 @@ def evaluate_combination(comb, data_dir,
     # patterns
     v_w = glob.glob(os.path.join(video_dir, f"*combination_{comb}*.pth"))[0]
     a_w = glob.glob(os.path.join(audio_dir, f"*combination_{comb}*.pth"))[0]
-    f_w = glob.glob(os.path.join(fusion_dir, f"*combination-{comb}_scheduled.pth"))[0]
+    f_w = glob.glob(os.path.join(fusion_dir, f"*combination-{comb}_evi.pth"))[0]
     print(f"Video weights : {v_w}")
     print(f"Audio weights : {a_w}")
     print(f"Fusion weights: {f_w}")
@@ -79,15 +79,25 @@ def main():
     args = p.parse_args()
 
     plt.figure()
-    for comb in range(1,11):
-        evaluate_combination(
-            comb,
+    # for comb in range(1,11):
+    #     evaluate_combination(
+    #         comb,
+    #         args.data_dir,
+    #         args.video_weights_dir,
+    #         args.audio_weights_dir,
+    #         args.fusion_weights_dir,
+    #         args.csv_dir
+    #     )
+
+    evaluate_combination(
+            1,
             args.data_dir,
             args.video_weights_dir,
             args.audio_weights_dir,
             args.fusion_weights_dir,
             args.csv_dir
         )
+    
     plt.xlabel("FPR (known→unknown)")
     plt.ylabel("Known Accuracy")
     plt.title("OSCR Curves (1–10)")
