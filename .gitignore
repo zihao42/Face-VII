@@ -11,3 +11,5 @@ test_datafolder/
 debug_weights/
 *.wav
 *.mp4
+/output
+/auroc-oscr

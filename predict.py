@@ -33,11 +33,22 @@ def load_models(combination: int, video_weights: str,
     label_map = generate_label_map(combination)
     inv_map = inverse_label_map(label_map)
     num_known = len(label_map)
+    
+    # fusion_model = MultimodalTransformer(
+    #     modality_num=2,
+    #     num_classes=len(label_map),
+    #     input_dim=video_bb.config.hidden_size,
+    #     num_layers=2,
+    #     feature_only=False
+    # )
+    # fusion_model.load_state_dict(torch.load(clf_w, map_location=device))
+    # fusion_model.to(device).eval()
 
     fusion_model = MultimodalTransformer(
         modality_num=2,
         num_classes=num_known,
         input_dim=video_bb.config.hidden_size,
+        num_layers=2,
         feature_only=False
     )
     fusion_model.load_state_dict(torch.load(fusion_weights, map_location=device))
@@ -82,7 +93,7 @@ def main():
     parser.add_argument("--video_weights", required=True)
     parser.add_argument("--audio_weights", required=True)
     parser.add_argument("--fusion_weights", required=True)
-    parser.add_argument("--threshold", type=float, default=0.7)
+    parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args()
 
     print(f"[INFO] Using combination: {args.combination}")

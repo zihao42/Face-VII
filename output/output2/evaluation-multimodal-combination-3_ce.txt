@@ -1,2 +1,0 @@
-combination,AUROC,OSCR_AUC
-3,0.5237,0.1359

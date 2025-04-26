@@ -41,7 +41,7 @@ def evaluate_combination(comb, data_dir,
     video_bb = load_timesformer_backbone(vid_w, device)
     audio_bb = load_audio_backbone(aud_w, device)
     label_map = generate_label_map(comb)
-    inv_map = inverse_label_map(label_map)
+    inv_map   = inverse_label_map(label_map)
     fusion_model = MultimodalTransformer(
         modality_num=2,
         num_classes=len(label_map),
@@ -57,18 +57,30 @@ def evaluate_combination(comb, data_dir,
         modality='both', batch_size=BATCH_SIZE
     )
 
-    # AUROC: collect scores & labels
+    # AUROC: collect scores & labels, and print per-sample info
     auroc_metric = AUROC(pos_label=1)
     scores, labels = [], []
+
+    # 准备文件名列表，用于打印
+    video_files = test_loader.dataset.vfiles
+    idx_ptr = 0
+
     for batch, gts in tqdm(test_loader, desc=f"Comb {comb} AUROC"):
-        _, unk_scores, _ = predict_batch(
+        preds, unk_scores, _ = predict_batch(
             batch['video'], batch['audio'],
             video_bb, audio_bb, fusion_model,
             label_map, inv_map,
             threshold=0.0
         )
+        # 打印每个样本的文件名、预测标签和真实 emo_label
+        for i, gt in enumerate(gts.tolist()):
+            fname = video_files[idx_ptr + i]
+            print(f"[TEST] File: {fname}, Pred: {preds[i]}, GT: {gt}")
+        idx_ptr += len(gts)
+
         scores.extend(unk_scores)
         labels.extend([1 if gt == 8 else 0 for gt in gts.tolist()])
+
     scores_t = torch.tensor(scores)
     labels_t = torch.tensor(labels, dtype=torch.int)
     auroc = auroc_metric(scores_t, labels_t)
@@ -81,7 +93,7 @@ def evaluate_combination(comb, data_dir,
     frates, accs = [], []
     thr_range = torch.linspace(0.0, 1.0, steps=21)
     for t in tqdm(thr_range.tolist(), desc=f"Comb {comb} OSCR"):
-        fp, kn_corr, kn_tot = 0, 0, 0
+        fp = kn_corr = kn_tot = 0
         for batch, gts in test_loader:
             preds, _, maxp = predict_batch(
                 batch['video'], batch['audio'],
@@ -98,6 +110,7 @@ def evaluate_combination(comb, data_dir,
                         kn_corr += 1
         frates.append(fp / kn_tot if kn_tot else 0.0)
         accs.append(kn_corr / kn_tot if kn_tot else 0.0)
+
     fr_t = torch.tensor(frates)
     ac_t = torch.tensor(accs)
     oscr_auc = tm_auc(fr_t, ac_t)
@@ -135,7 +148,7 @@ def main():
 
     # 绘制并保存 OSCR 曲线
     plt.figure()
-    for comb in range(1, 11):
+    for comb in range(1, 2):
         fpr, tpr = evaluate_combination(
             comb,
             args.data_dir,
