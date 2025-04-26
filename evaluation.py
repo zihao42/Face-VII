@@ -2,9 +2,11 @@
 import os
 import glob
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
 from torchmetrics import AUROC
 from torchmetrics.functional import auc as tm_auc
+from sklearn.metrics import roc_curve
 from data import get_openset_dataloaders
 from audio_feature_extract import load_audio_backbone
 from visual_feature_extract import load_timesformer_backbone
@@ -55,7 +57,7 @@ def evaluate_combination(comb, data_dir,
         modality='both', batch_size=BATCH_SIZE
     )
 
-    # AUROC
+    # AUROC: collect scores & labels
     auroc_metric = AUROC(pos_label=1)
     scores, labels = [], []
     for batch, gts in tqdm(test_loader, desc=f"Comb {comb} AUROC"):
@@ -72,7 +74,10 @@ def evaluate_combination(comb, data_dir,
     auroc = auroc_metric(scores_t, labels_t)
     print(f"AUROC: {auroc:.4f}")
 
-    # OSCR
+    # Compute ROC curve
+    fpr, tpr, _ = roc_curve(labels_t.numpy(), scores_t.numpy())
+
+    # OSCR: compute false positive rates & accuracies over thresholds
     frates, accs = [], []
     thr_range = torch.linspace(0.0, 1.0, steps=21)
     for t in tqdm(thr_range.tolist(), desc=f"Comb {comb} OSCR"):
@@ -98,7 +103,7 @@ def evaluate_combination(comb, data_dir,
     oscr_auc = tm_auc(fr_t, ac_t)
     print(f"OSCR AUC: {oscr_auc:.4f}")
 
-    # 初始化并写入结果（如果第一次写入，则写入表头）
+    # 写入 evaluation 结果文件
     if not os.path.exists(results_txt):
         with open(results_txt, "w") as f:
             f.write("combination,AUROC,OSCR_AUC\n")
@@ -108,23 +113,30 @@ def evaluate_combination(comb, data_dir,
     # 绘制当前组合的 OSCR 曲线
     plt.plot(frates, accs, label=f"Comb {comb}")
 
+    return fpr, tpr
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", required=True)
-    parser.add_argument("--video_weights_dir", required=True)
-    parser.add_argument("--audio_weights_dir", required=True)
+    parser.add_argument("--data_dir", default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
+    parser.add_argument("--video_weights_dir", default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual")
+    parser.add_argument("--audio_weights_dir", default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio")
     parser.add_argument("--classifier_weights_dir", required=True)
-    parser.add_argument("--csv_dir", required=True)
-    parser.add_argument("--output_dir", default="/media/data1/ningtong/wzh/projects/Face-VII/eva_output",
+    parser.add_argument("--csv_dir", default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel-reduced")
+    parser.add_argument("--output_dir", required=True,
                         help="Directory to save plots and result logs")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # 收集所有组合的 ROC 曲线数据
+    roc_curves = {}
+
+    # 绘制并保存 OSCR 曲线
     plt.figure()
     for comb in range(1, 11):
-        evaluate_combination(
+        fpr, tpr = evaluate_combination(
             comb,
             args.data_dir,
             args.video_weights_dir,
@@ -133,6 +145,7 @@ def main():
             args.csv_dir,
             args.output_dir
         )
+        roc_curves[comb] = (fpr, tpr)
 
     plt.xlabel("False Positive Rate (known→unknown)")
     plt.ylabel("Known class accuracy")
@@ -140,12 +153,41 @@ def main():
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
+    oscr_fig = os.path.join(args.output_dir, "oscr_curves.png")
+    plt.savefig(oscr_fig)
+    print(f"[INFO] OSCR curves saved to {oscr_fig}")
+    plt.close()
 
-    # 保存总体 OSCR 曲线图
-    fig_path = os.path.join(args.output_dir, "oscr_curves.png")
-    plt.savefig(fig_path)
-    print(f"[INFO] OSCR curves saved to {fig_path}")
-    plt.show()
+    # 绘制并保存 ROC 曲线汇总图
+    plt.figure()
+    for comb, (fpr, tpr) in roc_curves.items():
+        plt.plot(fpr, tpr, alpha=0.3, label=f"Comb {comb}")
+    # 平均 ROC
+    mean_fpr = np.linspace(0, 1, 100)
+    tprs_interp = [np.interp(mean_fpr, fpr, tpr) for fpr, tpr in roc_curves.values()]
+    mean_tpr = np.mean(tprs_interp, axis=0)
+    plt.plot(mean_fpr, mean_tpr, color='red', linewidth=2, label="Mean ROC")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curves for all combinations")
+    plt.legend()
+    plt.grid(True)
+    roc_fig = os.path.join(args.output_dir, "roc_curves.png")
+    plt.savefig(roc_fig)
+    print(f"[INFO] ROC curves saved to {roc_fig}")
+    plt.close()
+
+    # 保存 ROC 数据到 txt
+    roc_data_txt = os.path.join(args.output_dir, "roc_data.txt")
+    with open(roc_data_txt, "w") as f:
+        for comb, (fpr, tpr) in roc_curves.items():
+            f.write(f"Combination {comb}\n")
+            f.write("FPR: " + ",".join(map(str, fpr.tolist())) + "\n")
+            f.write("TPR: " + ",".join(map(str, tpr.tolist())) + "\n\n")
+        f.write("Mean ROC\n")
+        f.write("Mean FPR: " + ",".join(map(str, mean_fpr.tolist())) + "\n")
+        f.write("Mean TPR: " + ",".join(map(str, mean_tpr.tolist())) + "\n")
+    print(f"[INFO] ROC data saved to {roc_data_txt}")
 
 if __name__ == "__main__":
     main()
