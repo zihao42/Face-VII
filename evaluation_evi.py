@@ -26,6 +26,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import classification_report, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+
 
 from data import load_audio_file, load_video_frames
 from fusion_train import collate_fn_modality
@@ -80,7 +82,7 @@ def evaluate_single_combination_evi(
 
     device = args.device
 
-    # Load pretrained backbones and evidential model
+    # 1) Load pretrained backbones and evidential model
     video_bb, audio_bb, fusion_model, label_map, inv_map, device, enn_head = \
         load_models(
             comb_id,
@@ -89,10 +91,10 @@ def evaluate_single_combination_evi(
             checkpoint_path
         )
 
-    # Prepare test data
-    df = pd.read_csv(csv_path)
+    # 2) Prepare data & mappings
+    df       = pd.read_csv(csv_path)
     train_df = df[df.category == 'train']
-    test_df  = df[df.category  == 'test']
+    test_df  = df[df.category == 'test']
     known_labels = sorted(set(train_df.emo_label))
     map_known    = {lbl: i for i, lbl in enumerate(known_labels)}
     unknown_id   = len(map_known)
@@ -103,7 +105,7 @@ def evaluate_single_combination_evi(
         test_df.emo_label.values
     ))
     dataset = EvaluationDataset(samples, args.media_dir, args.num_frames)
-    loader = DataLoader(
+    loader  = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
@@ -111,93 +113,90 @@ def evaluate_single_combination_evi(
         num_workers=4,
         pin_memory=(device.type == 'cuda')
     )
-    # for local testing
-    # loader = DataLoader(
-    #     dataset,
-    #     batch_size=args.batch_size,
-    #     shuffle=False,
-    #     collate_fn=collate_fn_modality,
-    #     num_workers=0,
-    #     pin_memory=False
-    # )
 
-    y_true, y_pred, raw_preds, confidences = [], [], [], []
+    y_true        = []
+    raw_preds_arg = []
+    confidences   = []
 
+    # 3) Collect raw argmax preds & confidences (1 - vacuity)
     with torch.no_grad():
         for wavs, vids, raw_lbls in tqdm(loader, desc=f"Comb {comb_id}"):
             preds, vacs, _ = predict_batch(
                 vids, wavs,
-                (video_bb, audio_bb, fusion_model, label_map, inv_map, device, enn_head),
+                (video_bb, audio_bb, fusion_model,
+                 label_map, inv_map, device, enn_head),
                 threshold=args.threshold
             )
-            # Convert vacuity to known-confidence
             confs = [1.0 - v for v in vacs]
 
             for i, raw in enumerate(raw_lbls):
                 raw_int = int(raw) if isinstance(raw, (int, np.integer)) else int(raw.item())
-                # Map ground truth
-                if raw_int != 8:
-                    gt = map_known[raw_int]
-                else:
-                    gt = unknown_id
+                gt = map_known[raw_int] if raw_int != 8 else unknown_id
                 y_true.append(gt)
-                raw_preds.append(preds[i])
+                raw_preds_arg.append(preds[i])
                 confidences.append(confs[i])
-                # Final prediction already uses vacuity threshold in predict_batch
-                y_pred.append(preds[i])
 
     y_true      = np.array(y_true, dtype=int)
-    raw_preds   = np.array(raw_preds, dtype=int)
-    y_pred      = np.array(y_pred, dtype=int)
+    raw_preds   = np.array(raw_preds_arg, dtype=int)
     confidences = np.array(confidences, dtype=float)
 
-    # Closed-set report (known only)
-    mask_known = (y_true != unknown_id)
-    report = classification_report(
-        y_true[mask_known], y_pred[mask_known],
-        digits=4, zero_division=0
-    )
-    print("Closed-set classification report:\n", report)
+    # 4) Multi-threshold binary metrics (known vs unknown)
+    bin_thr_vals = np.arange(0.05, 1.0, 0.1)
+    bin_metrics  = []
+    y_true_bin   = (y_true == unknown_id).astype(int)
+    for thr in bin_thr_vals:
+        y_pred_thr = np.where(confidences < thr, unknown_id, raw_preds)
+        y_pred_bin = (y_pred_thr == unknown_id).astype(int)
+        acc  = accuracy_score(y_true_bin, y_pred_bin)
+        prec = precision_score(y_true_bin, y_pred_bin, zero_division=0)
+        rec  = recall_score(y_true_bin, y_pred_bin, zero_division=0)
+        bin_metrics.append((thr, acc, prec, rec))
 
-    # Open-set AUROC (treat known as positive)
-    y_os = mask_known.astype(int)
+    # 5) Open-set AUROC & ROC
+    y_os  = (y_true != unknown_id).astype(int)
     auroc = roc_auc_score(y_os, confidences)
     fpr, tpr, _ = roc_curve(y_os, confidences)
     roc_list.append((comb_id, fpr, tpr))
-    print(f"Open-set AUROC: {auroc:.4f}")
 
-    # OSCR: CCR vs. unknown-FPR
+    # 6) OSCR: dynamic threshold with raw_preds_arg
     thr_vals = np.linspace(0, 1, 101)
-    ccrs, fprs = [], []
-    n_known   = mask_known.sum()
-    n_unknown = (~mask_known).sum()
-    correct_known = (raw_preds == y_true) & mask_known
-
+    oscr_fprs, oscr_ccrs = [], []
+    n_known   = (y_true != unknown_id).sum()
+    n_unknown = (y_true == unknown_id).sum()
     for thr in thr_vals:
-        ccr = (correct_known & (confidences >= thr)).sum() / n_known if n_known else 0.0
-        fpr_u = ((~mask_known) & (confidences >= thr)).sum() / n_unknown if n_unknown else 0.0
-        ccrs.append(ccr)
-        fprs.append(fpr_u)
+        detect = confidences >= thr
+        correct_known = ((y_true != unknown_id) &
+                         detect &
+                         (raw_preds == y_true)).sum()
+        ccr = correct_known / n_known if n_known > 0 else 0.0
 
-    # Sort by fpr
-    idx = np.argsort(fprs)
-    fprs_sorted = np.array(fprs)[idx].tolist()
-    ccrs_sorted = np.array(ccrs)[idx].tolist()
+        false_alarm = ((y_true == unknown_id) &
+                       detect).sum()
+        fpr_u = false_alarm / n_unknown if n_unknown > 0 else 0.0
+
+        oscr_ccrs.append(ccr)
+        oscr_fprs.append(fpr_u)
+
+    idx = np.argsort(oscr_fprs)
+    fprs_sorted = np.array(oscr_fprs)[idx].tolist()
+    ccrs_sorted = np.array(oscr_ccrs)[idx].tolist()
     oscr = np.trapz(ccrs_sorted, fprs_sorted)
     oscr_list.append((comb_id, fprs_sorted, ccrs_sorted))
-    print(f"OSCR AUC: {oscr:.4f}")
 
-    # Save results
-    base = f"multimodal-combination-{comb_id}_evi"
-    out_txt = os.path.join(args.output_dir, base + "_results.txt")
-    with open(out_txt, 'w') as f:
-        f.write(f"Combination {comb_id} (EVI) Results:\n\n")
-        f.write("Closed-set Report:\n")
-        f.write(report + "\n")
+    # 7) Save results
+    base    = f"multimodal-combination-{comb_id}_evi"
+    os.makedirs(args.output_dir, exist_ok=True)
+    res_path = os.path.join(args.output_dir, base + "_results.txt")
+    with open(res_path, 'w') as f:
+        f.write(f"Combination {comb_id} (EVI) Binary known-vs-unknown @ thresholds:\n")
+        f.write("thr\tAccuracy\tPrecision\tRecall\n")
+        for thr, acc, prec, rec in bin_metrics:
+            f.write(f"{thr:.2f}\t{acc:.4f}\t{prec:.4f}\t{rec:.4f}\n")
+        f.write("\n")
         f.write(f"Open-set AUROC: {auroc:.4f}\n")
-        f.write(f"OSCR AUC: {oscr:.4f}\n")
+        f.write(f"OSCR          : {oscr:.4f}\n")
 
-    # Save ROC and OSCR data
+    # Save ROC & OSCR data
     pd.DataFrame({'fpr': fpr, 'tpr': tpr}).to_csv(
         os.path.join(args.output_dir, base + '_roc.csv'), index=False
     )
@@ -205,6 +204,11 @@ def evaluate_single_combination_evi(
         os.path.join(args.output_dir, base + '_oscr.csv'), index=False
     )
 
+    print(f"Saved: {res_path}")
+    print(f"Saved: {base}_roc.csv")
+    print(f"Saved: {base}_oscr.csv")
+
+    return auroc, oscr
 
 def plot_and_save_aggregate(roc_list, oscr_list, out_dir):
     # Aggregate ROC
@@ -241,12 +245,16 @@ def plot_and_save_aggregate(roc_list, oscr_list, out_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights_dir',       required=True,
-                        help='Directory with *_combination-*_evi.pth checkpoints')
-    parser.add_argument('--audio_backbone_dir', required=True)
-    parser.add_argument('--visual_backbone_dir',required=True)
-    parser.add_argument('--csv_dir',           required=True)
-    parser.add_argument('--media_dir',         required=True)
+    parser.add_argument('--weights_dir', type=str, required=True,
+                        help='Classifier weights directory')
+    parser.add_argument('--audio_backbone_dir', type=str, default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio",
+                        help='Audio backbone weights directory')
+    parser.add_argument('--visual_backbone_dir', type=str, default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual",
+                        help='Visual backbone weights directory')
+    parser.add_argument('--csv_dir', type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel-reduced",
+                        help='Directory of CSV files')
+    parser.add_argument('--media_dir', type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/data",
+                        help='Directory of media data (audio/video)')
     parser.add_argument('--batch_size',        type=int, default=32)
     parser.add_argument('--threshold',         type=float, default=0.5)
     parser.add_argument('--num_frames',        type=int, default=32)
