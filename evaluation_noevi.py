@@ -103,7 +103,7 @@ def evaluate_single_combination(
     # 读取 CSV，构建 label_map
     raw_df   = pd.read_csv(csv_path)
     train_df = raw_df[raw_df.category == 'train']
-    test_df  = raw_df[raw_df.category  == 'test']
+    test_df  = raw_df[raw_df.category == 'test']
     known_labels = sorted(set(train_df.emo_label))
     label_map    = {lbl: i for i, lbl in enumerate(known_labels)}
     num_known    = len(label_map)
@@ -134,14 +134,13 @@ def evaluate_single_combination(
     )
 
     # 存储预测结果
-    y_true, y_pred, confidences, raw_preds = [], [], [], []
+    y_true, raw_preds, confidences = [], [], []
 
     with torch.no_grad():
         for wavs, vids, raw_lbls in tqdm(loader,
                                          desc=f"Comb {comb_id}",
                                          leave=False):
             wavs, vids = wavs.to(device), vids.to(device)
-
             feat_v = extract_frame_features_from_backbone(vids, backbone_v)
             feat_a = extract_audio_features_from_backbone(wavs, backbone_a)
             logits, _ = model([feat_a, feat_v])
@@ -150,96 +149,92 @@ def evaluate_single_combination(
             preds      = logits.argmax(dim=1).cpu().numpy()
 
             for i, raw in enumerate(raw_lbls):
-                raw_int = int(raw.item()) if hasattr(raw, 'item') else int(raw)
-                if raw_int != 8:
-                    mapped = label_map[raw_int]
-                else:
-                    mapped = unknown_id
-
+                raw_int = int(raw.item()) if hasattr(raw,'item') else int(raw)
+                mapped = label_map[raw_int] if raw_int != 8 else unknown_id
                 y_true.append(mapped)
                 raw_preds.append(preds[i])
                 confidences.append(batch_conf[i])
 
-                if batch_conf[i] < args.threshold:
-                    y_pred.append(unknown_id)
-                else:
-                    y_pred.append(int(preds[i]))
-
     y_true      = np.array(y_true, dtype=int)
-    y_pred      = np.array(y_pred, dtype=int)
     raw_preds   = np.array(raw_preds, dtype=int)
     confidences = np.array(confidences, dtype=float)
 
-    # Closed-set 分类报告（仅已知样本）
-    mask_known = (y_true != unknown_id)
-    report = classification_report(
-        y_true[mask_known], y_pred[mask_known],
-        digits=4, zero_division=0
-    )
+    # 1) 多个阈值下的二分类指标
+    from sklearn.metrics import accuracy_score, precision_score, recall_score
+    bin_thr_vals = np.arange(0.05, 1.0, 0.1)
+    bin_metrics = []
+    for thr in bin_thr_vals:
+        # 动态阈值预测
+        y_pred_thr = np.where(confidences < thr, unknown_id, raw_preds)
+        y_true_bin = (y_true == unknown_id).astype(int)
+        y_pred_bin = (y_pred_thr == unknown_id).astype(int)
+        acc  = accuracy_score(y_true_bin, y_pred_bin)
+        prec = precision_score(y_true_bin, y_pred_bin, zero_division=0)
+        rec  = recall_score(y_true_bin, y_pred_bin, zero_division=0)
+        bin_metrics.append((thr, acc, prec, rec))
 
-    # Open-set AUROC
+    # 2) Open-set AUROC & ROC
     y_os  = (y_true != unknown_id).astype(int)
     auroc = roc_auc_score(y_os, confidences)
     fpr, tpr, _ = roc_curve(y_os, confidences)
     roc_list.append((comb_id, fpr, tpr))
 
-    # OSCR 计算：CCR vs. unknown-FPR
+    # 3) OSCR 计算（动态阈值）
     thr_vals = np.linspace(0, 1, 101)
-    ccrs, fprs = [], []
-    n_known   = mask_known.sum()
+    oscr_fprs, oscr_ccrs = [], []
+    n_known   = (y_true != unknown_id).sum()
     n_unknown = (y_true == unknown_id).sum()
-    raw_correct = (raw_preds == y_true) & mask_known
-
     for thr in thr_vals:
-        ccr   = (raw_correct & (confidences >= thr)).sum() / n_known \
-                if n_known > 0 else 0.0
-        fpr_u = ((y_true == unknown_id) & (confidences >= thr)).sum() / n_unknown \
-                if n_unknown > 0 else 0.0
-        ccrs.append(ccr)
-        fprs.append(fpr_u)
-
-    # 在存入列表前，对 (fprs, ccrs) 按 fprs 升序排序
-    fprs_arr = np.array(fprs)
-    ccrs_arr = np.array(ccrs)
-    idx      = np.argsort(fprs_arr)
-    fprs_sorted = fprs_arr[idx].tolist()
-    ccrs_sorted = ccrs_arr[idx].tolist()
-
+        detect_mask = confidences >= thr
+        # CCR: 高于阈值的已知样本中，raw_preds==y_true
+        correct_known = ((y_true != unknown_id) &
+                         detect_mask &
+                         (raw_preds == y_true)).sum()
+        ccr = correct_known / n_known if n_known > 0 else 0.0
+        # FPR: 高于阈值的未知样本比例
+        false_alarm = ((y_true == unknown_id) &
+                       detect_mask).sum()
+        fpr_u = false_alarm / n_unknown if n_unknown > 0 else 0.0
+        oscr_ccrs.append(ccr)
+        oscr_fprs.append(fpr_u)
+    # 升序排序后积分
+    idx = np.argsort(oscr_fprs)
+    fprs_sorted = np.array(oscr_fprs)[idx].tolist()
+    ccrs_sorted = np.array(oscr_ccrs)[idx].tolist()
     oscr = np.trapz(ccrs_sorted, fprs_sorted)
     oscr_list.append((comb_id, fprs_sorted, ccrs_sorted))
 
-    # 结果保存
+    # 保存结果
     comb_name = f"multimodal-combination-{comb_id}_{loss_type}"
     out_dir   = args.output_dir
+    os.makedirs(out_dir, exist_ok=True)
 
-    # Results text
     res_path = os.path.join(out_dir, f"{comb_name}_results.txt")
     with open(res_path, 'w') as f:
-        f.write(f"Combination {comb_id} ({loss_type}) Results:\n\n")
-        f.write("Closed-set classification report:\n")
-        f.write(report + "\n")
+        f.write(f"Combination {comb_id} ({loss_type}) Binary known-vs-unknown @ thresholds:\n")
+        f.write("thr\tAccuracy\tPrecision\tRecall\n")
+        for thr, acc, prec, rec in bin_metrics:
+            f.write(f"{thr:.2f}\t{acc:.4f}\t{prec:.4f}\t{rec:.4f}\n")
+        f.write("\n")
         f.write(f"AUROC (open-set): {auroc:.4f}\n")
-        f.write(f"OSCR: {oscr:.4f}\n")
+        f.write(f"OSCR            : {oscr:.4f}\n")
 
-    # ROC data
-    roc_data_path = os.path.join(out_dir, f"{comb_name}_roc_data.txt")
-    np.savetxt(roc_data_path,
-               np.vstack([fpr, tpr]).T,
-               header="fpr tpr", fmt="%.6f")
-
-    # OSCR data
-    oscr_data_path = os.path.join(out_dir, f"{comb_name}_oscr_data.txt")
-    np.savetxt(oscr_data_path,
-               np.vstack([fprs_sorted, ccrs_sorted]).T,
-               header="fpr ccr", fmt="%.6f")
+    np.savetxt(
+        os.path.join(out_dir, f"{comb_name}_roc_data.txt"),
+        np.vstack([fpr, tpr]).T,
+        header="fpr tpr", fmt="%.6f"
+    )
+    np.savetxt(
+        os.path.join(out_dir, f"{comb_name}_oscr_data.txt"),
+        np.vstack([fprs_sorted, ccrs_sorted]).T,
+        header="fpr ccr", fmt="%.6f"
+    )
 
     print(f"Saved: {res_path}")
-    print(f"Saved: {roc_data_path}")
-    print(f"Saved: {oscr_data_path}")
+    print(f"Saved: {comb_name}_roc_data.txt")
+    print(f"Saved: {comb_name}_oscr_data.txt")
 
     return auroc, oscr
-
-
 
 def plot_and_save_aggregate_roc(roc_list, loss_type, out_dir):
     """绘制所有组合 ROC（透明线 + 平均红线），并保存 PNG/TXT。"""
