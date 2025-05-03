@@ -1,20 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-evaluation_evi.py: Evaluate evidential multimodal models on RAVDESS open-set test.
-
-Usage:
-    python evaluation_evi.py \
-        --weights_dir /path/to/evi_checkpoints \
-        --audio_backbone_dir /path/to/backbones/audio \
-        --visual_backbone_dir /path/to/backbones/visual \
-        --csv_dir /path/to/csvs/multimodel-reduced \
-        --media_dir /path/to/media \
-        --batch_size 32 \
-        --threshold 0.5 \
-        --num_frames 32 \
-        --device cuda \
-        --output_dir /path/to/results
+evaluation_evi.py: Evaluate evidential multimodal (EVI) models on RAVDESS open-set test,
+with identical metric saving & plotting behavior as evaluation_noevi.py.
 """
 import os
 import re
@@ -23,18 +11,18 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import classification_report, roc_auc_score, roc_curve
+from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
-from sklearn.metrics import accuracy_score, precision_score, recall_score
 
-
+# Data loading & model helpers
 from data import load_audio_file, load_video_frames
 from fusion_train import collate_fn_modality
 from enn_predict import load_models, predict_batch
 
 class EvaluationDataset(Dataset):
-    """Dataset for evaluation: returns raw labels (0-8)."""
+    """Dataset for evaluation: returns (wav, frames, raw_label)."""
     def __init__(self, samples, media_dir, num_frames, video_transform=None):
         self.samples = samples
         self.media_dir = media_dir
@@ -61,13 +49,12 @@ class EvaluationDataset(Dataset):
         )
         return wav, frames, raw_lbl
 
-
 def parse_combination_number(filename):
+    """Extract combination ID from filename."""
     m = re.search(r'combination[-_]?(\d+)', filename)
     if not m:
         raise ValueError(f"Cannot parse combination from {filename}")
     return int(m.group(1))
-
 
 def evaluate_single_combination_evi(
     comb_id, checkpoint_path,
@@ -80,9 +67,7 @@ def evaluate_single_combination_evi(
     print(f" Checkpoint:      {checkpoint_path}")
     print(f" CSV file:        {csv_path}")
 
-    device = args.device
-
-    # 1) Load pretrained backbones and evidential model
+    # 1) Load EVI model components
     video_bb, audio_bb, fusion_model, label_map, inv_map, device, enn_head = \
         load_models(
             comb_id,
@@ -91,7 +76,7 @@ def evaluate_single_combination_evi(
             checkpoint_path
         )
 
-    # 2) Prepare data & mappings
+    # 2) Read CSV & build label maps
     df       = pd.read_csv(csv_path)
     train_df = df[df.category == 'train']
     test_df  = df[df.category == 'test']
@@ -99,6 +84,7 @@ def evaluate_single_combination_evi(
     map_known    = {lbl: i for i, lbl in enumerate(known_labels)}
     unknown_id   = len(map_known)
 
+    # 3) Prepare DataLoader
     samples = list(zip(
         test_df.audio_filename.values,
         test_df.video_filename.values,
@@ -106,19 +92,14 @@ def evaluate_single_combination_evi(
     ))
     dataset = EvaluationDataset(samples, args.media_dir, args.num_frames)
     loader  = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=collate_fn_modality,
-        num_workers=4,
-        pin_memory=(device.type == 'cuda')
+        dataset, batch_size=args.batch_size,
+        shuffle=False, collate_fn=collate_fn_modality,
+        num_workers=4, pin_memory=(device.type=='cuda')
     )
 
-    y_true        = []
-    raw_preds_arg = []
-    confidences   = []
+    y_true, raw_preds, confidences = [], [], []
 
-    # 3) Collect raw argmax preds & confidences (1 - vacuity)
+    # 4) Inference: get argmax preds & confidences
     with torch.no_grad():
         for wavs, vids, raw_lbls in tqdm(loader, desc=f"Comb {comb_id}"):
             preds, vacs, _ = predict_batch(
@@ -128,19 +109,18 @@ def evaluate_single_combination_evi(
                 threshold=args.threshold
             )
             confs = [1.0 - v for v in vacs]
-
             for i, raw in enumerate(raw_lbls):
-                raw_int = int(raw) if isinstance(raw, (int, np.integer)) else int(raw.item())
+                raw_int = int(raw) if isinstance(raw,(int,np.integer)) else int(raw.item())
                 gt = map_known[raw_int] if raw_int != 8 else unknown_id
                 y_true.append(gt)
-                raw_preds_arg.append(preds[i])
+                raw_preds.append(preds[i])
                 confidences.append(confs[i])
 
     y_true      = np.array(y_true, dtype=int)
-    raw_preds   = np.array(raw_preds_arg, dtype=int)
+    raw_preds   = np.array(raw_preds, dtype=int)
     confidences = np.array(confidences, dtype=float)
 
-    # 4) Multi-threshold binary metrics (known vs unknown)
+    # 5) Binary known-vs-unknown metrics at multiple thresholds
     bin_thr_vals = np.arange(0.05, 1.0, 0.1)
     bin_metrics  = []
     y_true_bin   = (y_true == unknown_id).astype(int)
@@ -152,96 +132,114 @@ def evaluate_single_combination_evi(
         rec  = recall_score(y_true_bin, y_pred_bin, zero_division=0)
         bin_metrics.append((thr, acc, prec, rec))
 
-    # 5) Open-set AUROC & ROC
-    y_os  = (y_true != unknown_id).astype(int)
-    auroc = roc_auc_score(y_os, confidences)
+    # 6) Open-set AUROC & ROC
+    y_os        = (y_true != unknown_id).astype(int)
+    auroc       = roc_auc_score(y_os, confidences)
     fpr, tpr, _ = roc_curve(y_os, confidences)
     roc_list.append((comb_id, fpr, tpr))
 
-    # 6) OSCR: dynamic threshold with raw_preds_arg
-    thr_vals = np.linspace(0, 1, 101)
-    oscr_fprs, oscr_ccrs = [], []
-    n_known   = (y_true != unknown_id).sum()
-    n_unknown = (y_true == unknown_id).sum()
+    # 7) OSCR computation
+    thr_vals    = np.linspace(0, 1, 101)
+    oscr_fprs   = []
+    oscr_ccrs   = []
+    n_known     = (y_true != unknown_id).sum()
+    n_unknown   = (y_true == unknown_id).sum()
     for thr in thr_vals:
-        detect = confidences >= thr
-        correct_known = ((y_true != unknown_id) &
-                         detect &
-                         (raw_preds == y_true)).sum()
-        ccr = correct_known / n_known if n_known > 0 else 0.0
-
-        false_alarm = ((y_true == unknown_id) &
-                       detect).sum()
-        fpr_u = false_alarm / n_unknown if n_unknown > 0 else 0.0
-
+        detect       = confidences >= thr
+        correct_kn   = ((y_true != unknown_id) & detect & (raw_preds == y_true)).sum()
+        ccr          = correct_kn / n_known if n_known>0 else 0.0
+        false_alarm  = ((y_true == unknown_id) & detect).sum()
+        fpr_u        = false_alarm / n_unknown if n_unknown>0 else 0.0
         oscr_ccrs.append(ccr)
         oscr_fprs.append(fpr_u)
-
-    idx = np.argsort(oscr_fprs)
-    fprs_sorted = np.array(oscr_fprs)[idx].tolist()
-    ccrs_sorted = np.array(oscr_ccrs)[idx].tolist()
-    oscr = np.trapz(ccrs_sorted, fprs_sorted)
+    idx            = np.argsort(oscr_fprs)
+    fprs_sorted    = np.array(oscr_fprs)[idx].tolist()
+    ccrs_sorted    = np.array(oscr_ccrs)[idx].tolist()
+    oscr_value     = np.trapz(ccrs_sorted, fprs_sorted)
     oscr_list.append((comb_id, fprs_sorted, ccrs_sorted))
 
-    # 7) Save results
-    base    = f"multimodal-combination-{comb_id}_evi"
-    os.makedirs(args.output_dir, exist_ok=True)
-    res_path = os.path.join(args.output_dir, base + "_results.txt")
+    # 8) Save per-combination results (matching evaluation_noevi.py) :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
+    comb_name = f"multimodal-combination-{comb_id}_evi"
+    out_dir   = args.output_dir
+    os.makedirs(out_dir, exist_ok=True)
+
+    # results.txt
+    res_path = os.path.join(out_dir, f"{comb_name}_results.txt")
     with open(res_path, 'w') as f:
         f.write(f"Combination {comb_id} (EVI) Binary known-vs-unknown @ thresholds:\n")
         f.write("thr\tAccuracy\tPrecision\tRecall\n")
         for thr, acc, prec, rec in bin_metrics:
             f.write(f"{thr:.2f}\t{acc:.4f}\t{prec:.4f}\t{rec:.4f}\n")
         f.write("\n")
-        f.write(f"Open-set AUROC: {auroc:.4f}\n")
-        f.write(f"OSCR          : {oscr:.4f}\n")
+        f.write(f"AUROC (open-set): {auroc:.4f}\n")
+        f.write(f"OSCR            : {oscr_value:.4f}\n")
 
-    # Save ROC & OSCR data
-    pd.DataFrame({'fpr': fpr, 'tpr': tpr}).to_csv(
-        os.path.join(args.output_dir, base + '_roc.csv'), index=False
+    # ROC & OSCR data TXT
+    np.savetxt(
+        os.path.join(out_dir, f"{comb_name}_roc_data.txt"),
+        np.vstack([fpr, tpr]).T,
+        header="fpr tpr", fmt="%.6f"
     )
-    pd.DataFrame({'fpr': fprs_sorted, 'ccr': ccrs_sorted}).to_csv(
-        os.path.join(args.output_dir, base + '_oscr.csv'), index=False
+    np.savetxt(
+        os.path.join(out_dir, f"{comb_name}_oscr_data.txt"),
+        np.vstack([fprs_sorted, ccrs_sorted]).T,
+        header="fpr ccr", fmt="%.6f"
     )
 
     print(f"Saved: {res_path}")
-    print(f"Saved: {base}_roc.csv")
-    print(f"Saved: {base}_oscr.csv")
+    print(f"Saved: {comb_name}_roc_data.txt")
+    print(f"Saved: {comb_name}_oscr_data.txt")
 
-    return auroc, oscr
+    return auroc, oscr_value
 
-def plot_and_save_aggregate(roc_list, oscr_list, out_dir):
-    # Aggregate ROC
+def plot_and_save_aggregate_roc(roc_list, loss_type, out_dir):
+    """Aggregate ROC: transparent per-comb + red mean, save PNG/TXT. (No-EVI style) :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}"""
     plt.figure()
-    for comb, fpr, tpr in roc_list:
-        plt.plot(fpr, tpr, alpha=0.3, label=f"Comb {comb}")
     grid = np.linspace(0, 1, 1000)
-    interp_tprs = [np.interp(grid, fpr, tpr) for _, fpr, tpr in roc_list]
-    mean_tpr = np.mean(interp_tprs, axis=0)
-    plt.plot(grid, mean_tpr, color='red', linewidth=2, label='Mean ROC')
+    interp_tprs = []
+    for comb_id, fpr, tpr in roc_list:
+        plt.plot(fpr, tpr, alpha=0.3, label=f"Comb {comb_id}")
+        interp = np.interp(grid, fpr, tpr)
+        interp[0] = 0.0
+        interp_tprs.append(interp)
+    mean_tpr        = np.mean(interp_tprs, axis=0)
+    mean_tpr[-1]    = 1.0
+    plt.plot(grid, mean_tpr, linewidth=2, color='red', label="Mean ROC")
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
-    plt.title('Aggregate ROC (EVI)')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(out_dir, 'evi_aggregate_roc.png'))
+    plt.title(f'Aggregate ROC ({loss_type})')
+    plt.legend(loc='lower right')
+    png_path = os.path.join(out_dir, f"{loss_type}_all_combinations_mean_ROC.png")
+    txt_path = os.path.join(out_dir, f"{loss_type}_all_combinations_ROC_data.txt")
+    plt.savefig(png_path)
+    np.savetxt(txt_path, np.vstack([grid, mean_tpr]).T,
+               header='fpr mean_tpr', fmt="%.6f")
+    print(f"Saved aggregate ROC plot to {png_path}")
+    print(f"Saved aggregate ROC data to {txt_path}")
     plt.close()
 
-    # Aggregate OSCR
+def plot_and_save_aggregate_oscr(oscr_list, loss_type, out_dir):
+    """Aggregate OSCR: transparent per-comb + red mean, save PNG/TXT. (No-EVI style) :contentReference[oaicite:4]{index=4}:contentReference[oaicite:5]{index=5}"""
     plt.figure()
-    for comb, fprs, ccrs in oscr_list:
-        plt.plot(fprs, ccrs, alpha=0.3, label=f"Comb {comb}")
-    interp_ccrs = [np.interp(grid, fprs, ccrs) for _, fprs, ccrs in oscr_list]
-    mean_ccr = np.mean(interp_ccrs, axis=0)
-    plt.plot(grid, mean_ccr, color='red', linewidth=2, label='Mean OSCR')
+    grid = np.linspace(0, 1, 1000)
+    interp_ccrs = []
+    for comb_id, fprs, ccrs in oscr_list:
+        plt.plot(fprs, ccrs, alpha=0.3, label=f"Comb {comb_id}")
+        interp_ccrs.append(np.interp(grid, fprs, ccrs))
+    mean_ccr        = np.mean(interp_ccrs, axis=0)
+    plt.plot(grid, mean_ccr, linewidth=2, color='red', label="Mean OSCR")
     plt.xlabel('False Positive Rate (Unknown)')
     plt.ylabel('Closed-set Classification Rate')
-    plt.title('Aggregate OSCR (EVI)')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(out_dir, 'evi_aggregate_oscr.png'))
+    plt.title(f'Aggregate OSCR ({loss_type})')
+    plt.legend(loc='lower right')
+    png_path = os.path.join(out_dir, f"{loss_type}_all_combinations_mean_OSCR.png")
+    txt_path = os.path.join(out_dir, f"{loss_type}_all_combinations_OSCR_data.txt")
+    plt.savefig(png_path)
+    np.savetxt(txt_path, np.vstack([grid, mean_ccr]).T,
+               header='fpr mean_ccr', fmt="%.6f")
+    print(f"Saved aggregate OSCR plot to {png_path}")
+    print(f"Saved aggregate OSCR data to {txt_path}")
     plt.close()
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -255,35 +253,52 @@ def main():
                         help='Directory of CSV files')
     parser.add_argument('--media_dir', type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/data",
                         help='Directory of media data (audio/video)')
-    parser.add_argument('--batch_size',        type=int, default=32)
-    parser.add_argument('--threshold',         type=float, default=0.5)
-    parser.add_argument('--num_frames',        type=int, default=32)
-    parser.add_argument('--device',            default='cuda')
-    parser.add_argument('--output_dir',        required=True)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--threshold', type=float, default=0.5)
+    parser.add_argument('--num_frames', type=int, default=32)
+    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--output_dir', type=str, required=True)
     args = parser.parse_args()
 
+    # Device check
     if args.device.startswith('cuda') and not torch.cuda.is_available():
+        print("CUDA not available, switching to CPU")
         args.device = 'cpu'
+    print(f"Using device: {args.device}")
+
     os.makedirs(args.output_dir, exist_ok=True)
 
-    clf_files = sorted(f for f in os.listdir(args.weights_dir) if f.endswith('.pth'))
+    # Evaluate each checkpoint
+    all_ckpts = sorted(f for f in os.listdir(args.weights_dir) if f.endswith('.pth'))
     roc_list, oscr_list = [], []
-    for clf in clf_files:
+    for ckpt in all_ckpts:
         try:
-            comb_id = parse_combination_number(clf)
+            comb_id = parse_combination_number(ckpt)
         except ValueError:
             continue
-        chkpt = os.path.join(args.weights_dir, clf)
-        aud_bb = os.path.join(args.audio_backbone_dir, f"openset_split_combination_{comb_id}_wav2vec_backbone.pth")
-        vis_bb = os.path.join(args.visual_backbone_dir, f"openset_split_combination_{comb_id}_timesformer_backbone.pth")
-        csv_path = os.path.join(args.csv_dir, f"multimodal-combination-{comb_id}.csv")
+        checkpoint_path = os.path.join(args.weights_dir, ckpt)
+        audio_bb_path   = os.path.join(
+            args.audio_backbone_dir,
+            f"openset_split_combination_{comb_id}_wav2vec_backbone.pth"
+        )
+        visual_bb_path  = os.path.join(
+            args.visual_backbone_dir,
+            f"openset_split_combination_{comb_id}_timesformer_backbone.pth"
+        )
+        csv_path        = os.path.join(
+            args.csv_dir,
+            f"multimodal-combination-{comb_id}.csv"
+        )
         evaluate_single_combination_evi(
-            comb_id, chkpt, aud_bb, vis_bb, csv_path,
-            args, roc_list, oscr_list
+            comb_id, checkpoint_path,
+            audio_bb_path, visual_bb_path,
+            csv_path, args, roc_list, oscr_list
         )
 
+    # Plot & save aggregate curves
     if roc_list and oscr_list:
-        plot_and_save_aggregate(roc_list, oscr_list, args.output_dir)
+        plot_and_save_aggregate_roc(roc_list, 'evi', args.output_dir)
+        plot_and_save_aggregate_oscr(oscr_list, 'evi', args.output_dir)
 
 if __name__ == '__main__':
     main()
