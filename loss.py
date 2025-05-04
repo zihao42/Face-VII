@@ -76,7 +76,7 @@ def scheduled_variance_aware_loss(
 
 
 # define function for EDL loss
-def evidential_loss_from_batch(evidence, labels):
+def evidential_loss_from_batch(evidence, labels, lambda_unk: float = 0.1):
     """
     Negative Log-Likelihood (NLL) style EDL loss:
       sum_{k=1 to K}[ y_k * ( log( sum_j alpha_j ) - log(alpha_k) ) ]
@@ -95,19 +95,9 @@ def evidential_loss_from_batch(evidence, labels):
     log_alpha = torch.log(alpha)
 
     per_sample_loss = torch.sum(y_onehot * (log_sum_alpha - log_alpha), dim=1)
-    loss = per_sample_loss.mean()
-    return loss
+    ce_loss = per_sample_loss.mean()
 
-# for evidential uncertainty from Dirichlet
-def compute_evidential_unknown_score(evidence):
-    """
-    Optional helper if you want an 'unknown score' akin to 'compute_unknown_score' 
-    in the variance-based approach. 
-    Score = predictive uncertainty = K / sum(alpha_k).
-    """
-    alpha = evidence + 1.0
-    alpha0 = alpha.sum(dim=1)   # shape (B,)
-    K = alpha.shape[1]
-    # The higher this is, the more uncertain => more likely unknown
-    unknown_score = K / alpha0  # shape (B,)
-    return unknown_score
+    # add regularization term
+    L_unk = torch.mean(torch.log(alpha0.squeeze(1)))
+    loss = ce_loss + lambda_unk * L_unk
+    return loss

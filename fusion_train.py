@@ -382,7 +382,7 @@ def main():
     unique_labels  = sorted(labels_train.union(labels_val))
     label_map      = {lbl: i for i, lbl in enumerate(unique_labels)}
 
-    # 打印检查 label_map 映射及类别数
+    # 打印检查 label_map 映射及类别数m
     print(f"Label map: {label_map}")
     print(f"Number of labels: {len(label_map)}")
     # —— 修改点结束 —— 
