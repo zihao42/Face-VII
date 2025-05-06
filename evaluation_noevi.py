@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-evaluation_noenn.py: Evaluate CE and Scheduled-Variance multimodal models on RAVDESS open-set test.
-
-Usage:
-    python evaluation_noenn.py \
-        --weights_dir /path/to/model-scheduled \
-        --audio_backbone_dir /path/to/backbones/audio \
-        --visual_backbone_dir /path/to/backbones/visual \
-        --csv_dir /path/to/csvs/multimodel-reduced \
-        --media_dir /path/to/media \
-        --batch_size 32 \
-        --threshold 0.7 \
-        --num_frames 32 \
-        --device cuda \
-        --output_dir /path/to/results
-"""
 import os
 import re
 import argparse
@@ -28,7 +10,6 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import classification_report, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
 
-# 数据加载和特征提取辅助
 from data import load_audio_file, load_video_frames
 from fusion_train import collate_fn_modality
 from feature_fusion import MultimodalTransformer
@@ -54,7 +35,7 @@ class EvaluationDataset(Dataset):
     def __getitem__(self, idx):
         a_fn, v_fn, raw_lbl = self.samples[idx]
         wav = load_audio_file(os.path.join(self.media_dir, a_fn))
-        # 若声道数>1，则平均
+
         if wav.dim() > 1:
             wav = wav.mean(dim=0, keepdim=True)
         frames = load_video_frames(
@@ -65,17 +46,14 @@ class EvaluationDataset(Dataset):
         return wav, frames, raw_lbl
 
 def parse_combination_number(filename):
-    """从文件名中精确提取数字型 combination ID。"""
+
     m = re.search(r'combination[-_]?(\d+)', filename)
     if not m:
         raise ValueError(f"Cannot parse combination number from {filename}")
     return int(m.group(1))
 
 def calculate_confidence(logits, loss_type=None):
-    """
-    计算 confidence：
-      - CE 和 scheduled variance 均使用 softmax 最大概率
-    """
+
     probs = F.softmax(logits, dim=1)
     max_prob, _ = probs.max(dim=1)
     return max_prob.cpu().numpy()
@@ -85,7 +63,7 @@ def evaluate_single_combination(
     clf_path, audio_backbone_path, visual_backbone_path, csv_path,
     args, roc_list, oscr_list
 ):
-    # 打印文件匹配信息
+
     print(f"\nTesting Combination {comb_id} ({loss_type}):")
     print('-'*60)
     print(f" Audio backbone:  {audio_backbone_path}")
@@ -96,11 +74,9 @@ def evaluate_single_combination(
 
     device = args.device
 
-    # 加载 backbones
     backbone_v = load_timesformer_backbone(visual_backbone_path, device)
     backbone_a = load_audio_backbone(audio_backbone_path, device)
 
-    # 读取 CSV，构建 label_map
     raw_df   = pd.read_csv(csv_path)
     train_df = raw_df[raw_df.category == 'train']
     test_df  = raw_df[raw_df.category == 'test']
@@ -109,7 +85,6 @@ def evaluate_single_combination(
     num_known    = len(label_map)
     unknown_id   = num_known
 
-    # 初始化模型
     model = MultimodalTransformer(
         modality_num=2, num_classes=num_known,
         num_layers=2, feature_only=False
@@ -118,7 +93,6 @@ def evaluate_single_combination(
     model.load_state_dict(state)
     model.eval()
 
-    # 准备测试集 DataLoader
     samples = list(zip(
         test_df.audio_filename.values,
         test_df.video_filename.values,
@@ -133,7 +107,6 @@ def evaluate_single_combination(
         num_workers=4, pin_memory=True
     )
 
-    # 存储预测结果
     y_true, raw_preds, confidences = [], [], []
 
     with torch.no_grad():
@@ -159,12 +132,11 @@ def evaluate_single_combination(
     raw_preds   = np.array(raw_preds, dtype=int)
     confidences = np.array(confidences, dtype=float)
 
-    # 1) 多个阈值下的二分类指标
     from sklearn.metrics import accuracy_score, precision_score, recall_score
     bin_thr_vals = np.arange(0.05, 1.0, 0.1)
     bin_metrics = []
     for thr in bin_thr_vals:
-        # 动态阈值预测
+
         y_pred_thr = np.where(confidences < thr, unknown_id, raw_preds)
         y_true_bin = (y_true == unknown_id).astype(int)
         y_pred_bin = (y_pred_thr == unknown_id).astype(int)
@@ -173,38 +145,35 @@ def evaluate_single_combination(
         rec  = recall_score(y_true_bin, y_pred_bin, zero_division=0)
         bin_metrics.append((thr, acc, prec, rec))
 
-    # 2) Open-set AUROC & ROC
     y_os  = (y_true != unknown_id).astype(int)
     auroc = roc_auc_score(y_os, confidences)
     fpr, tpr, _ = roc_curve(y_os, confidences)
     roc_list.append((comb_id, fpr, tpr))
 
-    # 3) OSCR 计算（动态阈值）
     thr_vals = np.linspace(0, 1, 101)
     oscr_fprs, oscr_ccrs = [], []
     n_known   = (y_true != unknown_id).sum()
     n_unknown = (y_true == unknown_id).sum()
     for thr in thr_vals:
         detect_mask = confidences >= thr
-        # CCR: 高于阈值的已知样本中，raw_preds==y_true
+
         correct_known = ((y_true != unknown_id) &
                          detect_mask &
                          (raw_preds == y_true)).sum()
         ccr = correct_known / n_known if n_known > 0 else 0.0
-        # FPR: 高于阈值的未知样本比例
+
         false_alarm = ((y_true == unknown_id) &
                        detect_mask).sum()
         fpr_u = false_alarm / n_unknown if n_unknown > 0 else 0.0
         oscr_ccrs.append(ccr)
         oscr_fprs.append(fpr_u)
-    # 升序排序后积分
+
     idx = np.argsort(oscr_fprs)
     fprs_sorted = np.array(oscr_fprs)[idx].tolist()
     ccrs_sorted = np.array(oscr_ccrs)[idx].tolist()
     oscr = np.trapz(ccrs_sorted, fprs_sorted)
     oscr_list.append((comb_id, fprs_sorted, ccrs_sorted))
 
-    # 保存结果
     comb_name = f"multimodal-combination-{comb_id}_{loss_type}"
     out_dir   = args.output_dir
     os.makedirs(out_dir, exist_ok=True)
@@ -237,7 +206,6 @@ def evaluate_single_combination(
     return auroc, oscr
 
 def plot_and_save_aggregate_roc(roc_list, loss_type, out_dir):
-    """绘制所有组合 ROC（透明线 + 平均红线），并保存 PNG/TXT。"""
     plt.figure()
     grid = np.linspace(0, 1, 1000)
     interp_tprs = []
@@ -271,7 +239,6 @@ def plot_and_save_aggregate_roc(roc_list, loss_type, out_dir):
     plt.close()
 
 def plot_and_save_aggregate_oscr(oscr_list, loss_type, out_dir):
-    """绘制所有组合 OSCR（透明线 + 平均红线），并保存 PNG/TXT。"""
     plt.figure()
     grid = np.linspace(0, 1, 1000)
     interp_ccrs = []
@@ -326,16 +293,13 @@ def main():
                         help='Directory to save all result files')
     args = parser.parse_args()
 
-    # 检查并创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # 设备选择
     if args.device.startswith('cuda') and not torch.cuda.is_available():
         print('CUDA not available, switching to CPU')
         args.device = 'cpu'
     print(f"Using device: {args.device}")
 
-    # 遍历 classifier 权重
     all_files = os.listdir(args.weights_dir)
     clf_files = sorted([f for f in all_files if f.endswith('.pth')])
 
@@ -347,7 +311,7 @@ def main():
             comb_id = parse_combination_number(clf)
         except ValueError:
             continue
-        # 提取 loss_type（如 scheduled 或 ce）
+
         m2 = re.search(r'multimodal-combination-\d+_(\w+)\.pth$', clf)
         loss_type = m2.group(1) if m2 else 'scheduled'
 
@@ -371,9 +335,7 @@ def main():
             csv_path, args, roc_list, oscr_list
         )
 
-    # 聚合绘图并保存
     if roc_list:
-        # 提取第一个文件来获取 loss_type（假设同一目录下类型一致）
         first = clf_files[0]
         lt = re.search(r'_(\w+)\.pth$', first)
         loss_type_agg = lt.group(1) if lt else 'scheduled'

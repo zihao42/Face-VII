@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-evaluation_evi.py: Evaluate evidential multimodal (EVI) models on RAVDESS open-set test,
-with identical metric saving & plotting behavior as evaluation_noevi.py.
-"""
 import os
 import re
 import argparse
@@ -22,7 +16,6 @@ from fusion_train import collate_fn_modality
 from enn_predict import load_models, predict_batch
 
 class EvaluationDataset(Dataset):
-    """Dataset for evaluation: returns (wav, frames, raw_label)."""
     def __init__(self, samples, media_dir, num_frames, video_transform=None):
         self.samples = samples
         self.media_dir = media_dir
@@ -50,7 +43,6 @@ class EvaluationDataset(Dataset):
         return wav, frames, raw_lbl
 
 def parse_combination_number(filename):
-    """Extract combination ID from filename."""
     m = re.search(r'combination[-_]?(\d+)', filename)
     if not m:
         raise ValueError(f"Cannot parse combination from {filename}")
@@ -67,7 +59,6 @@ def evaluate_single_combination_evi(
     print(f" Checkpoint:      {checkpoint_path}")
     print(f" CSV file:        {csv_path}")
 
-    # 1) Load EVI model components
     video_bb, audio_bb, fusion_model, label_map, inv_map, device, enn_head = \
         load_models(
             comb_id,
@@ -76,7 +67,6 @@ def evaluate_single_combination_evi(
             checkpoint_path
         )
 
-    # 2) Read CSV & build label maps
     df       = pd.read_csv(csv_path)
     train_df = df[df.category == 'train']
     test_df  = df[df.category == 'test']
@@ -84,7 +74,6 @@ def evaluate_single_combination_evi(
     map_known    = {lbl: i for i, lbl in enumerate(known_labels)}
     unknown_id   = len(map_known)
 
-    # 3) Prepare DataLoader
     samples = list(zip(
         test_df.audio_filename.values,
         test_df.video_filename.values,
@@ -99,7 +88,6 @@ def evaluate_single_combination_evi(
 
     y_true, raw_preds, confidences = [], [], []
 
-    # 4) Inference: get argmax preds & confidences
     with torch.no_grad():
         for wavs, vids, raw_lbls in tqdm(loader, desc=f"Comb {comb_id}"):
             preds, vacs, _ = predict_batch(
@@ -120,7 +108,6 @@ def evaluate_single_combination_evi(
     raw_preds   = np.array(raw_preds, dtype=int)
     confidences = np.array(confidences, dtype=float)
 
-    # 5) Binary known-vs-unknown metrics at multiple thresholds
     bin_thr_vals = np.arange(0.05, 1.0, 0.1)
     bin_metrics  = []
     y_true_bin   = (y_true == unknown_id).astype(int)
@@ -132,13 +119,11 @@ def evaluate_single_combination_evi(
         rec  = recall_score(y_true_bin, y_pred_bin, zero_division=0)
         bin_metrics.append((thr, acc, prec, rec))
 
-    # 6) Open-set AUROC & ROC
     y_os        = (y_true != unknown_id).astype(int)
     auroc       = roc_auc_score(y_os, confidences)
     fpr, tpr, _ = roc_curve(y_os, confidences)
     roc_list.append((comb_id, fpr, tpr))
 
-    # 7) OSCR computation
     thr_vals    = np.linspace(0, 1, 101)
     oscr_fprs   = []
     oscr_ccrs   = []
@@ -158,7 +143,6 @@ def evaluate_single_combination_evi(
     oscr_value     = np.trapz(ccrs_sorted, fprs_sorted)
     oscr_list.append((comb_id, fprs_sorted, ccrs_sorted))
 
-    # 8) Save per-combination results (matching evaluation_noevi.py) :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
     comb_name = f"multimodal-combination-{comb_id}_evi"
     out_dir   = args.output_dir
     os.makedirs(out_dir, exist_ok=True)
@@ -192,8 +176,8 @@ def evaluate_single_combination_evi(
 
     return auroc, oscr_value
 
+
 def plot_and_save_aggregate_roc(roc_list, loss_type, out_dir):
-    """Aggregate ROC: transparent per-comb + red mean, save PNG/TXT. (No-EVI style) :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}"""
     plt.figure()
     grid = np.linspace(0, 1, 1000)
     interp_tprs = []
@@ -219,7 +203,6 @@ def plot_and_save_aggregate_roc(roc_list, loss_type, out_dir):
     plt.close()
 
 def plot_and_save_aggregate_oscr(oscr_list, loss_type, out_dir):
-    """Aggregate OSCR: transparent per-comb + red mean, save PNG/TXT. (No-EVI style) :contentReference[oaicite:4]{index=4}:contentReference[oaicite:5]{index=5}"""
     plt.figure()
     grid = np.linspace(0, 1, 1000)
     interp_ccrs = []

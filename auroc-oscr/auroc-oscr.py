@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import re
 import sys
 import numpy as np
@@ -7,10 +6,7 @@ from sklearn.metrics import auc
 import os
 
 def parse_txt(file_path):
-    """
-    Parse the txt file and extract, for each threshold, all weight file's TP, TN, FP, FN counts (accumulated),
-    and extract the Mean Accuracy.
-    """
+
     with open(file_path, "r", encoding="utf-8") as file:
         lines = file.readlines()
     
@@ -18,14 +14,13 @@ def parse_txt(file_path):
     current_threshold = None
 
     for line in lines:
-        # Extract Threshold
+
         match = re.search(r"Threshold: ([0-9.]+)", line)
         if match:
             current_threshold = float(match.group(1))
             if current_threshold not in data:
                 data[current_threshold] = {"TP": 0, "TN": 0, "FP": 0, "FN": 0, "Accuracy": None}
 
-        # Extract TP, TN, FP, FN (accumulate for each weight file)
         match = re.search(r"TP: (\d+) .*? FN: (\d+) .*? TN: (\d+) .*? FP: (\d+)", line)
         if match and current_threshold is not None:
             tp, fn, tn, fp = map(int, match.groups())
@@ -34,7 +29,6 @@ def parse_txt(file_path):
             data[current_threshold]["TN"] += tn
             data[current_threshold]["FP"] += fp
 
-        # Extract Mean Accuracy
         match = re.search(r"Metrics for Threshold [0-9.]+: Accuracy: ([0-9.]+)%", line)
         if match and current_threshold is not None:
             data[current_threshold]["Accuracy"] = float(match.group(1)) / 100  # convert to decimal
@@ -42,9 +36,7 @@ def parse_txt(file_path):
     return data
 
 def compute_metrics(data):
-    """
-    Compute TPR, FPR, Accuracy, and rejection rate for ROC and OSCR curves.
-    """
+
     thresholds = []
     tpr_list = []
     fpr_list = []
@@ -60,7 +52,7 @@ def compute_metrics(data):
         tpr = tp / (tp + fn) if (tp + fn) > 0 else 0  # True Positive Rate
         fpr = fp / (fp + tn) if (fp + tn) > 0 else 0  # False Positive Rate
         accuracy = values["Accuracy"]
-        rejection = 1 - fpr  # Open-set rejection rate
+        rejection = 1 - fpr
 
         print(f"{threshold:<10.2f}{accuracy:<10.4f}{tp:<10}{tn:<10}{fp:<10}{fn:<10}")
 
@@ -75,10 +67,7 @@ def compute_metrics(data):
             np.array(accuracy_list), np.array(rejection_list))
 
 def calculate_bestfit_auc(x_vals, y_vals, degree=3, force_endpoints=False):
-    """
-    If force_endpoints is True, add endpoints (0,0) and (1,1) to x_vals and y_vals.
-    Then fit a polynomial of the specified degree and compute the area under the curve by integrating it.
-    """
+
     if force_endpoints:
         x_vals = np.concatenate(([0], x_vals, [1]))
         y_vals = np.concatenate(([0], y_vals, [1]))
@@ -90,10 +79,6 @@ def calculate_bestfit_auc(x_vals, y_vals, degree=3, force_endpoints=False):
     return area, poly_fit
 
 def plot_combined_curves(models, x_arrays, y_arrays, output_path, title, xlabel, ylabel, labels, force_endpoints=False):
-    """
-    Plot curves for multiple models and save as JPEG.
-    For the AUROC curve, if force_endpoints is True, force endpoints (0,0) and (1,1) and fit a best-fit curve.
-    """
     plt.figure(figsize=(6, 5))
     auc_values = {}
     for i, model in enumerate(models):
@@ -142,22 +127,19 @@ if __name__ == "__main__":
         all_fprs.append(fpr_list)
         all_accuracies.append(accuracy_list)
         all_rejections.append(rejection_list)
-    
-    # Plot AUROC (FPR vs. TPR) with best-fit curves.
-    # Force endpoints for the AUROC curve.
+
     auroc_auc_values = plot_combined_curves(
         model_names, all_fprs, all_tprs,
         "auroc.jpeg", "AUROC Curve",
         "False Positive Rate (FPR)", "True Positive Rate (TPR)", model_names,
         force_endpoints=True
     )
-    
-    # Plot OSCR (Rejection vs. Accuracy) with best-fit curves.
+
     oscr_auc_values = plot_combined_curves(
         model_names, all_rejections, all_accuracies,
         "oscr.jpeg", "OSCR Curve",
         "Rejection Rate (1 - FPR)", "Classification Accuracy", model_names,
-        force_endpoints=False  # Usually, OSCR does not need forced endpoints.
+        force_endpoints=False
     )
     
     print("\nCalculated AUROC areas from best-fit curves:")

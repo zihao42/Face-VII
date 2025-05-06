@@ -36,10 +36,6 @@ COMBINATION_SPLITS = {
 # Collate function for audio padding
 #############################
 def collate_fn_audio(batch):
-    """
-    对 batch 中的 audio waveform 进行 padding，保证同一 batch 内所有样本长度一致。
-    假设每个 waveform 的 shape 为 (1, num_samples)（单声道）
-    """
     waveforms, labels = zip(*batch)
     max_length = max(w.shape[1] for w in waveforms)
     padded = []
@@ -49,12 +45,6 @@ def collate_fn_audio(batch):
     return torch.stack(padded, dim=0), torch.tensor(labels)
 
 def collate_fn_default(batch):
-    """
-    Collate function for both video and audio: 
-    - stacks video tensors (all are [num_frames, C, H, W]) into [B, num_frames, C, H, W]
-    - pads each audio tensor (shape [num_frames, L_i]) along dim=1 to the batch max length, 
-      then stacks into [B, num_frames, max_L]
-    """
     samples, labels = zip(*batch)
 
     # Stack video
@@ -77,12 +67,6 @@ def collate_fn_default(batch):
 # Parsing filename → metadata
 #############################
 def parse_ravdess_info(filename):
-    """
-    Parse a RAVDESS filename and return:
-      - modality: "02" or "03"
-      - vocal_channel
-      - emotion: 0–7
-    """
     base, _ = os.path.splitext(os.path.basename(filename))
     parts = base.split('-')
     if len(parts) < 7:
@@ -97,10 +81,6 @@ def parse_ravdess_info(filename):
 # Video loader (32 frames)
 #############################
 def load_video_frames(video_path, num_frames=32, transform=None):
-    """
-    读取视频文件并均匀采样 num_frames 帧
-    返回 Tensor (num_frames, C, H, W)
-    """
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total <= 0:
@@ -263,11 +243,6 @@ def get_openset_dataloaders(data_dir, csv_dir,
                             batch_size=4, num_frames=32,
                             video_transform=None, audio_transform=None,
                             target_sample_rate=16000, num_workers=4):
-    """
-    Train loader: all category=='train'.
-    Val loader: all category=='test' & emo_label != 8.
-    Test loader: union of val set and all emo_label == 8.
-    """
     # Load and split CSV
     csv_path = os.path.join(csv_dir, f"multimodal-combination-{combination}.csv")
     if not os.path.exists(csv_path):

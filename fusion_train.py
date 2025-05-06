@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import os
 import argparse
 import re
@@ -21,7 +18,6 @@ from feature_fusion import MultimodalTransformer
 from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone
 from visual_feature_extract import load_timesformer_backbone, extract_frame_features_from_backbone
 from enn_head import EvidentialClassificationHead
-# 引入自定义 loss
 from loss import variance_aware_loss_from_batch, scheduled_variance_aware_loss, evidential_loss_from_batch
 
 
@@ -77,14 +73,11 @@ def train_and_evaluate(
     P_acc, P_reg,
     video_comb, audio_comb,
     weights_dir_visual, weights_dir_audio,
-    lr_end,         # 新增：最小学习率
-    val_threshold,  # 新增：精度触发阈值
+    lr_end,
+    val_threshold,
     enn_head = None
 ):
-    # 最早开始监控的 epoch
     MIN_MONITOR_EPOCH = 3
-
-    # R 模式下的忽略区间：R 在此区间时，不更新权重、不计数器、不早停
     IGNORE_R_LOW  = 1.2
     IGNORE_R_HIGH = 1.8
 
@@ -105,19 +98,18 @@ def train_and_evaluate(
     # 最优 checkpoint & epoch
     best_ckpt_wts    = None
     best_enn_wts     = None
-    best_epoch       = 1     # 修改：将默认最优 epoch 设为 1，避免 None 导致绘图出错
+    best_epoch       = 1
     best_R           = float('inf')
     best_val_acc_ce  = 0.0
     best_val_loss_ce = float('inf')
-    # 新增：用于 R 模式下的验证准确率监控
+
     best_val_acc_R   = 0.0
 
-    # Early-Stop 计数
     val_loss_counter = 0
     reg_counter      = 0
     ce_acc_no_imp    = 0
     ce_acc_req       = 0.03
-    # 新增：R 模式下的 val_acc 计数器
+
     val_acc_counter  = 0
 
     aborted = False
@@ -125,17 +117,15 @@ def train_and_evaluate(
     train_accs, val_accs     = [], []
     Rs                       = []
 
-    # 控制何时直接使用 lr_end
     use_min_lr = False
 
     try:
         for epoch in range(1, num_epochs + 1):
-            # 1. 计算 alpha（仅 scheduled）
+
             alpha = None
             if loss_type == "scheduled":
                 alpha = 0.0 if epoch == 1 else ((train_accs[-1] + val_accs[-1]) / 2) ** 2
 
-            # 2. 训练阶段
             model.train()
             tot_loss = tot_corr = tot_samps = 0
             for wavs, vids, labels in tqdm(
@@ -183,7 +173,6 @@ def train_and_evaluate(
             train_losses.append(tot_loss / tot_samps)
             train_accs.append(tot_corr / tot_samps)
 
-            # 3. 验证阶段
             model.eval()
             v_loss = v_corr = v_samps = 0
             for wavs, vids, labels in tqdm(
@@ -223,16 +212,14 @@ def train_and_evaluate(
             val_accs.append(val_acc)
             Rs.append(R)
 
-            # 4. 日志
             if accelerator.is_main_process:
                 r_str = f"{R:.4f}" if R is not None else "N/A"
                 print(f"Epoch {epoch}/{num_epochs}: "
                       f"Train Loss {train_losses[-1]:.4f}, Acc {train_accs[-1]:.4f} | "
                       f"Val Loss {val_loss:.4f}, Acc {val_acc:.4f} | R {r_str}")
 
-            # --- 5/6. 从 MIN_MONITOR_EPOCH 轮才开始更新最优 & Early-Stop ---
             if epoch >= MIN_MONITOR_EPOCH:
-                # Pure-CE 模式
+
                 if R is None:
                     if val_loss < best_val_loss_ce:
                         best_val_loss_ce = val_loss
@@ -258,12 +245,10 @@ def train_and_evaluate(
                         print(f"Early stopping (CE) at epoch {epoch}.")
                         break
                 else:
-                    # 如果 R 在忽略区间内，则跳过本轮监控
                     if IGNORE_R_LOW < R < IGNORE_R_HIGH:
                         if accelerator.is_main_process:
                             print(f"Epoch {epoch}: R={R:.4f} is abnormal，epoch ignored.")
                     else:
-                        # 正式的 R 模式更新 & 计数
                         if not (IGNORE_R_LOW < R < IGNORE_R_HIGH):
                             if R < best_R:
                                 best_R        = R
@@ -283,19 +268,16 @@ def train_and_evaluate(
                             else:
                                 val_acc_counter += 1
 
-                        # Early-Stop 判定
                         if val_acc_counter >= P_acc or reg_counter >= P_reg:
                             if accelerator.is_main_process:
                                 print(f"Early stopping (R style) at epoch {epoch}.")
                             break
 
-            # 在验证后，根据阈值决定学习率
             if not use_min_lr and val_acc >= val_threshold:
                 use_min_lr = True
                 if accelerator.is_main_process:
                     print(f"Val Acc reached {val_acc:.4f} ≥ {val_threshold:.2f}, switch to lr_end={lr_end}")
 
-            # 7. 更新 lr
             if use_min_lr:
                 for pg in optimizer.param_groups:
                     pg['lr'] = lr_end
@@ -308,7 +290,6 @@ def train_and_evaluate(
             traceback.print_exc()
             print("Training aborted due to exception.")
 
-    # 恢复最优
     if best_ckpt_wts is not None:
         model.load_state_dict(best_ckpt_wts)
         if enn_head is not None and best_enn_wts is not None:
@@ -351,7 +332,6 @@ def main():
     parser.add_argument("--P_reg",         type=int,   default=3)
     args = parser.parse_args()
 
-    # 自动从 csv_file 名称中提取 combination 编号 (保持不变)
     basename = os.path.basename(args.csv_file)
     m = re.search(r'combination[-_]?(\d+)\.csv$', basename)
     if m:
@@ -369,25 +349,19 @@ def main():
 
     accelerator = Accelerator()
 
-    # 读取原始 CSV
     raw_df = pd.read_csv(args.csv_file)
 
-    # 按照子集筛选 train/val
     train_df = raw_df[raw_df.category == "train"]
     val_df   = raw_df[(raw_df.category == "test") & (raw_df.emo_label != 8)]
 
-    # —— 修改点：根据 train/val 子集生成 label_map —— 
     labels_train   = set(train_df['emo_label'])
     labels_val     = set(val_df['emo_label'])
     unique_labels  = sorted(labels_train.union(labels_val))
     label_map      = {lbl: i for i, lbl in enumerate(unique_labels)}
 
-    # 打印检查 label_map 映射及类别数
     print(f"Label map: {label_map}")
     print(f"Number of labels: {len(label_map)}")
-    # —— 修改点结束 —— 
 
-    # 构造 sample 列表
     train_samples = list(zip(
         train_df.audio_filename,
         train_df.video_filename,
@@ -399,7 +373,6 @@ def main():
         val_df.emo_label
     ))
 
-    # 其余部分保持不变：DataLoader、模型、训练流程等
     video_transform = T.Compose([
         T.Resize((224,224)),
         T.ToTensor(),
@@ -462,7 +435,7 @@ def main():
         loss_fn = lambda evidence, labels: evidential_loss_from_batch(evidence, labels)
     else:  # scheduled
         enn_head = None
-        # 修改：调整 lambda 签名和调用方式，按正确顺序传入 alpha 而不是 current_epoch/total_epochs
+
         loss_fn = lambda logits, z, labels, alpha: scheduled_variance_aware_loss(
             z, logits, labels,
             alpha,
@@ -502,7 +475,6 @@ def main():
         aborted     = metrics["aborted"]
         epochs_ran  = len(metrics["train_losses"])
 
-        # Loss 曲线
         plt.figure()
         plt.plot(range(1, epochs_ran+1), metrics["train_losses"], label="Train Loss")
         plt.plot(range(1, epochs_ran+1), metrics["val_losses"],   label="Val Loss")
@@ -511,7 +483,6 @@ def main():
         plt.xlabel("Epoch"); plt.ylabel("Loss"); plt.legend()
         plt.savefig(os.path.join(args.output_dir, f"{filename}_loss.png"))
 
-        # Acc 曲线
         plt.figure()
         plt.plot(range(1, epochs_ran+1), metrics["train_accs"], label="Train Acc")
         plt.plot(range(1, epochs_ran+1), metrics["val_accs"],   label="Val Acc")
@@ -520,7 +491,6 @@ def main():
         plt.xlabel("Epoch"); plt.ylabel("Accuracy"); plt.legend()
         plt.savefig(os.path.join(args.output_dir, f"{filename}_acc.png"))
 
-        # R 曲线
         plt.figure()
         Rs = metrics["Rs"]
         xs = [i+1 for i, r in enumerate(Rs) if r is not None]

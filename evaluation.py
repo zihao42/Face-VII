@@ -1,4 +1,3 @@
-# evaluation.py
 import os
 import glob
 import torch
@@ -20,12 +19,11 @@ def evaluate_combination(comb, data_dir,
                          video_dir, audio_dir,
                          clf_dir, csv_dir,
                          output_dir):
-    # 找到对应的权重文件
+
     vid_w = glob.glob(os.path.join(video_dir, f"*combination_{comb}*.pth"))[0]
     aud_w = glob.glob(os.path.join(audio_dir, f"*combination_{comb}*.pth"))[0]
     clf_w = glob.glob(os.path.join(clf_dir, f"*combination-{comb}_*.pth"))[0]
 
-    # 根据 classifier 权重文件名生成结果文件路径
     base = os.path.basename(clf_w)
     name = os.path.splitext(base)[0]
     results_txt = os.path.join(output_dir, f"evaluation-{name}.txt")
@@ -61,7 +59,6 @@ def evaluate_combination(comb, data_dir,
     auroc_metric = AUROC(pos_label=1)
     scores, labels = [], []
 
-    # 准备文件名列表，用于打印
     video_files = test_loader.dataset.vfiles
     idx_ptr = 0
 
@@ -72,7 +69,7 @@ def evaluate_combination(comb, data_dir,
             label_map, inv_map,
             threshold=0.0
         )
-        # 打印每个样本的文件名、预测标签和真实 emo_label
+
         for i, gt in enumerate(gts.tolist()):
             fname = video_files[idx_ptr + i]
             print(f"[TEST] File: {fname}, Pred: {preds[i]}, GT: {gt}")
@@ -116,14 +113,12 @@ def evaluate_combination(comb, data_dir,
     oscr_auc = tm_auc(fr_t, ac_t)
     print(f"OSCR AUC: {oscr_auc:.4f}")
 
-    # 写入 evaluation 结果文件
     if not os.path.exists(results_txt):
         with open(results_txt, "w") as f:
             f.write("combination,AUROC,OSCR_AUC\n")
     with open(results_txt, "a") as f:
         f.write(f"{comb},{auroc:.4f},{oscr_auc:.4f}\n")
 
-    # 绘制当前组合的 OSCR 曲线
     plt.plot(frates, accs, label=f"Comb {comb}")
 
     return fpr, tpr
@@ -143,10 +138,8 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # 收集所有组合的 ROC 曲线数据
     roc_curves = {}
 
-    # 绘制并保存 OSCR 曲线
     plt.figure()
     for comb in range(1, 2):
         fpr, tpr = evaluate_combination(
@@ -171,11 +164,10 @@ def main():
     print(f"[INFO] OSCR curves saved to {oscr_fig}")
     plt.close()
 
-    # 绘制并保存 ROC 曲线汇总图
     plt.figure()
     for comb, (fpr, tpr) in roc_curves.items():
         plt.plot(fpr, tpr, alpha=0.3, label=f"Comb {comb}")
-    # 平均 ROC
+
     mean_fpr = np.linspace(0, 1, 100)
     tprs_interp = [np.interp(mean_fpr, fpr, tpr) for fpr, tpr in roc_curves.values()]
     mean_tpr = np.mean(tprs_interp, axis=0)
@@ -190,7 +182,6 @@ def main():
     print(f"[INFO] ROC curves saved to {roc_fig}")
     plt.close()
 
-    # 保存 ROC 数据到 txt
     roc_data_txt = os.path.join(args.output_dir, "roc_data.txt")
     with open(roc_data_txt, "w") as f:
         for comb, (fpr, tpr) in roc_curves.items():

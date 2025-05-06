@@ -1,5 +1,3 @@
-# enn_predict.py
-
 import argparse
 import torch
 import torch.nn as nn
@@ -29,14 +27,13 @@ def inverse_label_map(label_map):
 
 def load_models(combination, video_w, audio_w, ckpt_w,
                 input_dim=768, embed_dim=128, num_heads=8, num_layers=1):
-    """Load video/audio backbones, fusion transformer, and ENN head."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # for local testing
     # device = torch.device("cpu")
     # Backbones
     video_bb = load_timesformer_backbone(video_w, device)
     audio_bb = load_audio_backbone(audio_w, device)
-    # Fusion transformer (with classifier)
+
     num_known = len(generate_label_map(combination))
     fusion = MultimodalTransformer(
         modality_num=2,
@@ -50,23 +47,17 @@ def load_models(combination, video_w, audio_w, ckpt_w,
     ckpt = torch.load(ckpt_w, map_location=device)
     fusion.load_state_dict(ckpt["model"])
     fusion.to(device).eval()
-    # Evidential head on fused features
+
     enn_head = EvidentialClassificationHead(embed_dim * 2, num_known, use_bn=True)
     enn_head.load_state_dict(ckpt["enn_head"])
     enn_head.to(device).eval()
-    # Label maps
+
     label_map = generate_label_map(combination)
     inv_map = inverse_label_map(label_map)
     return video_bb, audio_bb, fusion, label_map, inv_map, device, enn_head
 
 
 def predict_batch(vids, auds, models, threshold=0.5):
-    """
-    Batch inference: returns lists of preds, vacuity scores, max_probs.
-    vids: Tensor [B, T, C, H, W]
-    auds: Tensor [B, ...] raw waveform
-    models: tuple(video_bb, audio_bb, fusion, enn_head, label_map, inv_map, device)
-    """
     video_bb, audio_bb, fusion, label_map, inv_map, device, enn_head = models
     B = vids.size(0)
     with torch.no_grad():

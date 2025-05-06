@@ -1,15 +1,9 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import os
 import torch
 import torch.nn as nn
 from transformers import Wav2Vec2Config, Wav2Vec2Model
 
 def load_audio_backbone(weights: str, device: torch.device) -> Wav2Vec2Model:
-    """
-    加载预训练的音频 backbone（Wav2Vec2）模型，并使用外部 .pth 权重初始化。
-    """
     config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base-960h")
     backbone = Wav2Vec2Model(config)
     # 安全地只加载权重
@@ -25,9 +19,6 @@ def extract_audio_features(
     weights_dir: str = os.path.join("weights", "backbones", "audio"),
     device: torch.device = None
 ) -> torch.Tensor:
-    """
-    按原逻辑：每次加载 backbone 并提取特征（兼容旧调用）。
-    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -55,9 +46,6 @@ def extract_audio_features_from_backbone(
     backbone: Wav2Vec2Model,
     target_frames: int = 32
 ) -> torch.Tensor:
-    """
-    使用已加载 backbone（只加载一次）提取音频特征并池化到 target_frames。
-    """
     device = next(backbone.parameters()).device
     audio_batch = audio_batch.to(device)
     outputs = backbone(audio_batch)
@@ -74,20 +62,12 @@ def extract_audio_features_from_backbone_eva(
     backbone: Wav2Vec2Model,
     target_frames: int = 32
 ) -> torch.Tensor:
-    """
-    使用已加载 backbone（只加载一次）提取音频特征并池化到 target_frames。
-    支持传入 [B, 1, 1, T] 或 [B, F, L] 的多余维度，自动 reshape 到 [B, T_total]。
-    """
     device = next(backbone.parameters()).device
-    # 把所有非 batch 维度都合并成一条长的时间序列
-    # e.g. [B, 1, 1, T] -> [B, T],   [B, F, L] -> [B, F*L]
     B = audio_batch.size(0)
     audio_flat = audio_batch.view(B, -1).to(device)  # [B, T_total]
 
-    # Wav2Vec2 期望输入是 2D [B, seq_len]
     outputs = backbone(audio_flat).last_hidden_state  # [B, seq_len', D]
 
-    # 按 target_frames 池化到固定帧数
     x = outputs.transpose(1, 2)                   # [B, D, seq_len']
     pooled = nn.functional.adaptive_avg_pool1d(x, target_frames)  # [B, D, target_frames]
     features = pooled.transpose(1, 2)             # [B, target_frames, D]

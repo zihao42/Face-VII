@@ -1,18 +1,12 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import os
 import torch
 from transformers import TimesformerModel
 
 def load_timesformer_backbone(weights: str, device: torch.device) -> TimesformerModel:
-    """
-    加载预训练的 Timesformer backbone，并初始化 .pth 权重。
-    """
     backbone = TimesformerModel.from_pretrained(
         "facebook/timesformer-base-finetuned-k400", output_hidden_states=False
     )
-    # 安全地只加载权重
+
     state_dict = torch.load(weights, map_location=device, weights_only=True)
     backbone.load_state_dict(state_dict)
     backbone.to(device)
@@ -25,9 +19,6 @@ def extract_frame_features(
     weights_dir: str = os.path.join("weights", "backbones", "visual"),
     device: torch.device = None
 ) -> torch.Tensor:
-    """
-    按原逻辑：每次加载 backbone 并提取特征（兼容旧调用）。
-    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -42,7 +33,7 @@ def extract_frame_features(
     video_batch = video_batch.to(device)
 
     outputs = backbone(video_batch)
-    last_hidden = outputs.last_hidden_state  # [B, L, D]
+    last_hidden = outputs.last_hidden_state
     B, L, D = last_hidden.shape
 
     Lw = L - 1
@@ -52,16 +43,13 @@ def extract_frame_features(
     P = Lw // T
 
     tokens = last_hidden[:, 1:, :].reshape(B, T, P, D)
-    frame_features = tokens.mean(dim=2)  # [B, T, D]
+    frame_features = tokens.mean(dim=2)
     return frame_features
 
 def extract_frame_features_from_backbone(
     video_batch: torch.Tensor,
     backbone: TimesformerModel
 ) -> torch.Tensor:
-    """
-    使用已加载 backbone（只加载一次）提取视频帧特征。
-    """
     device = next(backbone.parameters()).device
     video_batch = video_batch.to(device)
 

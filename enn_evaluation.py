@@ -1,5 +1,3 @@
-# enn_evaluation.py
-
 import os
 import glob
 import torch

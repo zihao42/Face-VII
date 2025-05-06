@@ -1,26 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-evaluation_noevi_closeset.py: Close-set evaluation for CE multimodal models on RAVDESS.
-
-输出：
-  - 每个 combination 的混淆矩阵 CSV 文件： combination-<id>_confusion.csv
-  - 平均混淆矩阵 CSV 文件： average_confusion.csv
-  - 平均混淆矩阵热力图： average_confusion.png
-  - 每个 combination 的 accuracy、precision、recall 及其平均汇总： metrics_summary.csv
-
-用法：
-  python evaluation_noevi_closeset.py \
-    --weights_dir /path/to/model-ce \
-    --audio_backbone_dir /path/to/backbones/audio \
-    --visual_backbone_dir /path/to/backbones/visual \
-    --csv_dir /path/to/csvs/multimodel-reduced \
-    --media_dir /path/to/RAVDESS/data \
-    --batch_size 32 \
-    --num_frames 32 \
-    --device cuda \
-    --output_dir /path/to/results
-"""
 import os
 import re
 import argparse
@@ -33,7 +10,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 
-from fusion_train import RAVDESSMultimodalDataset, collate_fn_modality  # 数据集与 collate_fn 复用训练脚本
+from fusion_train import RAVDESSMultimodalDataset, collate_fn_modality
 from feature_fusion import MultimodalTransformer
 from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone
 from visual_feature_extract import load_timesformer_backbone, extract_frame_features_from_backbone
@@ -57,7 +34,6 @@ def evaluate_single_combination_closeset(
     print(f"  Visual backbone: {visual_bb_path}")
     print(f"  CSV file:        {csv_path}")
 
-    # 1) 构建标签映射：train ∪ test_known
     raw_df   = pd.read_csv(csv_path)
     train_df = raw_df[raw_df.category == "train"]
     val_df   = raw_df[(raw_df.category == "test") & (raw_df.emo_label != 8)]
@@ -69,8 +45,7 @@ def evaluate_single_combination_closeset(
     
     print("Label Map:", label_map)
     print("Unique Labels:", unique_lbls)
-    
-    # 2) 构造测试样本，只取 test & emo_label != 8
+
     test_df = val_df
     samples = list(zip(
         test_df.audio_filename.values,
@@ -78,7 +53,6 @@ def evaluate_single_combination_closeset(
         test_df.emo_label.values
     ))
 
-    # 3) 加载数据集
     dataset = RAVDESSMultimodalDataset(
         samples,
         args.media_dir,
@@ -94,7 +68,6 @@ def evaluate_single_combination_closeset(
         pin_memory=(args.device.startswith("cuda"))
     )
 
-    # 4) 加载 backbones + 分类器
     device = torch.device(args.device)
     backbone_v = load_timesformer_backbone(visual_bb_path, device)
     backbone_a = load_audio_backbone(audio_bb_path, device)
@@ -109,7 +82,6 @@ def evaluate_single_combination_closeset(
     model.load_state_dict(state)
     model.eval()
 
-    # 5) 推理并收集标签索引
     y_true_idx, y_pred_idx = [], []
     with torch.no_grad():
         for wavs, vids, lbls in tqdm(loader, desc=f"Comb {comb_id}", leave=False):
@@ -128,7 +100,6 @@ def evaluate_single_combination_closeset(
     y_true_idx = np.array(y_true_idx, dtype=int)
     y_pred_idx = np.array(y_pred_idx, dtype=int)
 
-    # 6) 计算混淆矩阵（5×5）
     cm = confusion_matrix(
         y_true_idx,
         y_pred_idx,
@@ -156,9 +127,8 @@ def main():
         print("CUDA 不可用，切换到 CPU")
         args.device = 'cpu'
 
-    # 遍历 CE 权重
     all_clfs = sorted(f for f in os.listdir(args.weights_dir) if f.endswith('.pth'))
-    # 准备全 8 类标签列表
+
     full_labels = list(range(8))
     cms = []
     metrics_list = []
@@ -183,21 +153,18 @@ def main():
             f"multimodal-combination-{comb_id}.csv"
         )
 
-        # 计算单个 combination 的 5×5 混淆矩阵
         cm, labels = evaluate_single_combination_closeset(
             comb_id, clf_path,
             audio_bb_path, visual_bb_path,
             csv_path, args
         )
 
-        # 将 5×5 矩阵 zero‐pad 到 8×8
         cm8 = np.zeros((8, 8), dtype=cm.dtype)
         for i, li in enumerate(labels):
             for j, lj in enumerate(labels):
                 cm8[li, lj] = cm[i, j]
         cms.append(cm8)
 
-        # 计算宏平均准确率、精确率、召回率
         total_correct = cm.trace()
         total = cm.sum()
         accuracy = total_correct / total if total > 0 else 0.0
@@ -216,12 +183,10 @@ def main():
             'recall': np.mean(recalls)
         })
 
-    # 计算平均混淆矩阵并保存
     avg_cm8 = np.mean(cms, axis=0)
     df_avg8 = pd.DataFrame(avg_cm8, index=full_labels, columns=full_labels)
     df_avg8.to_csv(os.path.join(args.output_dir, "average_confusion.csv"))
 
-    # 绘制并保存热力图
     plt.figure()
     cm_vals = df_avg8.values
     im = plt.imshow(
@@ -235,7 +200,7 @@ def main():
     plt.xlabel("Predicted label")
     plt.ylabel("True label")
     plt.colorbar()
-    # 在每个格子中添加数值注释，高对比度显示
+
     thresh = cm_vals.max() / 2.0
     for i in range(cm_vals.shape[0]):
         for j in range(cm_vals.shape[1]):
@@ -248,7 +213,6 @@ def main():
     plt.savefig(os.path.join(args.output_dir, "average_confusion.png"))
     plt.close()
 
-    # 保存 metrics 汇总 CSV
     df_metrics = pd.DataFrame(metrics_list).set_index('combination')
     df_metrics.loc['average'] = df_metrics.mean()
     df_metrics.to_csv(

@@ -54,13 +54,7 @@ class ModalFusionBlock(nn.Module):
 class MultimodalTransformer(nn.Module):
     def __init__(self, modality_num, num_classes, feature_only=False, input_dim=768,
                  embed_dim=128, num_heads=8, num_layers=1):
-        """
-        初始化 MultimodalTransformer，用于多模态融合。
-        参数：
-          modality_num: 模态数量。
-          num_classes: 输出类别数。
-          featture_only: Bool, indicating if only output hidden features.
-        """
+
         super(MultimodalTransformer, self).__init__()
         self.feature_only = feature_only
         self.n_modality = modality_num
@@ -81,15 +75,6 @@ class MultimodalTransformer(nn.Module):
             self.classifier = nn.Linear(embed_dim * self.n_modality, num_classes)
 
     def forward(self, modal_data):
-        """
-        Args:
-          modal_data List[Tensor]: List of tensors of different modalities.
-          Tensors must have shape [Batch, Length, embed_dim]. Length dimension of tensors of different modalities
-          can have different values.
-        Returns:
-          output: 分类输出 (batch, num_classes)。
-          concat: hidden features after multimodal fusion. Of shape[Batch, num_modality * embed_dim]
-        """
         assert len(modal_data) == self.n_modality, \
             f"Mismatch of number of modality with data. " \
             f"Predefined number is {self.n_modality}, but get {len(modal_data)}"

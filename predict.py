@@ -1,4 +1,3 @@
-# predict.py
 import argparse
 import os
 import torch
@@ -33,16 +32,6 @@ def load_models(combination: int, video_weights: str,
     label_map = generate_label_map(combination)
     inv_map = inverse_label_map(label_map)
     num_known = len(label_map)
-    
-    # fusion_model = MultimodalTransformer(
-    #     modality_num=2,
-    #     num_classes=len(label_map),
-    #     input_dim=video_bb.config.hidden_size,
-    #     num_layers=2,
-    #     feature_only=False
-    # )
-    # fusion_model.load_state_dict(torch.load(clf_w, map_location=device))
-    # fusion_model.to(device).eval()
 
     fusion_model = MultimodalTransformer(
         modality_num=2,
