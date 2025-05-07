@@ -77,15 +77,6 @@ def main():
     args = p.parse_args()
 
     plt.figure()
-    # for comb in range(1,11):
-    #     evaluate_combination(
-    #         comb,
-    #         args.data_dir,
-    #         args.video_weights_dir,
-    #         args.audio_weights_dir,
-    #         args.fusion_weights_dir,
-    #         args.csv_dir
-    #     )
 
     evaluate_combination(
             1,

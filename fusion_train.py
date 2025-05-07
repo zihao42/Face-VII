@@ -308,19 +308,22 @@ def train_and_evaluate(
 
 
 def main():
+
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
     parser = argparse.ArgumentParser(description="Train multimodal fusion on RAVDESS")
-    parser.add_argument("--csv_file",      type=str,
-                        default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel/multimodal-combination-1.csv")
-    parser.add_argument("--media_dir",     type=str,
-                        default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
-    parser.add_argument("--output_dir",    type=str,
-                        default="/media/data1/ningtong/wzh/projects/Face-VII/weights")
+    parser.add_argument("--csv_file", type=str,
+                        default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/csv/multimodel/multimodal-combination-1.csv")))
+    parser.add_argument("--media_dir", type=str,
+                        default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/data")))
+    parser.add_argument("--output_dir", type=str,
+                        default=os.path.abspath(os.path.join(BASE_DIR, "weights")))
     parser.add_argument("--batch_size",    type=int,   default=32)
     parser.add_argument("--epochs",        type=int,   default=25)
     parser.add_argument("--lr",            type=float, default=6e-6)
     parser.add_argument("--lr_end",        type=float, default=2e-6)
     parser.add_argument("--val_threshold", type=float, default=0.8,
-                        help="当 val_acc ≥ 阈值时直接切换到 lr_end")
+                        help="Switch directly to lr_end when val_acc ≥ threshold.")
     parser.add_argument("--num_frames",    type=int,   default=32)
     parser.add_argument("--video_comb",    type=int,   default=None)
     parser.add_argument("--audio_comb",    type=int,   default=None)
@@ -339,7 +342,7 @@ def main():
         args.video_comb = comb if args.video_comb is None else args.video_comb
         args.audio_comb = comb if args.audio_comb is None else args.audio_comb
     else:
-        raise ValueError(f"无法从 csv 文件名 ‘{basename}’ 中识别 combination 编号")
+        raise ValueError(f"Failed to identify combination ID from CSV filename '{basename}'")
 
     print("----------------------------------------------------------------------------")
     print(f"CSV file:        {args.csv_file}")

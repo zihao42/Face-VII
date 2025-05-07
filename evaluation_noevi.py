@@ -270,16 +270,21 @@ def plot_and_save_aggregate_oscr(oscr_list, loss_type, out_dir):
     plt.close()
 
 def main():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights_dir', type=str, required=True,
                         help='Classifier weights directory')
-    parser.add_argument('--audio_backbone_dir', type=str, default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio",
+    parser.add_argument('--audio_backbone_dir', type=str,
+                        default=os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/audio")),
                         help='Audio backbone weights directory')
-    parser.add_argument('--visual_backbone_dir', type=str, default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual",
+    parser.add_argument('--visual_backbone_dir', type=str,
+                        default=os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/visual")),
                         help='Visual backbone weights directory')
-    parser.add_argument('--csv_dir', type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel-reduced",
+    parser.add_argument('--csv_dir', type=str,
+                        default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/csv/multimodel-reduced")),
                         help='Directory of CSV files')
-    parser.add_argument('--media_dir', type=str, default="/media/data1/ningtong/wzh/datasets/RAVDESS/data",
+    parser.add_argument('--media_dir', type=str,
+                        default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/data")),
                         help='Directory of media data (audio/video)')
     parser.add_argument('--batch_size',          type=int, default=32,
                         help='Batch size for DataLoader')

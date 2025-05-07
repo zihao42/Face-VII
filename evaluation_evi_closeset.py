@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-evaluation_evi_closeset.py: Close-set evaluation for evidential multimodal models on RAVDESS.
-
-Outputs:
-  - Per-combination confusion CSV: combination-<id>_confusion_evi.csv
-  - Average confusion CSV: average_confusion_evi.csv
-  - Average confusion heatmap: average_confusion_evi.png
-  - Metrics summary CSV: metrics_summary_evi.csv
-
-Usage:
-  python evaluation_evi_closeset.py \
-    --weights_dir /path/to/model-evi \
-    --audio_backbone_dir /path/to/backbones/audio \
-    --visual_backbone_dir /path/to/backbones/visual \
-    --csv_dir /path/to/csvs \
-    --media_dir /path/to/RAVDESS/data \
-    --batch_size 32 \
-    --num_frames 32 \
-    --device cuda \
-    --output_dir /path/to/output
-"""
 import os
 import re
 import argparse
@@ -148,13 +127,18 @@ def evaluate_single_combination_evi(
 
 
 def main():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights_dir',        type=str, required=True,
-                        help='EVI model weights directory')
-    parser.add_argument('--audio_backbone_dir',  default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio")
-    parser.add_argument('--visual_backbone_dir', default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual")
-    parser.add_argument('--csv_dir',             default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel-reduced")
-    parser.add_argument('--media_dir',           default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
+    parser.add_argument('--weights_dir', type=str, required=True,
+                        help='ENN model weights directory')
+    parser.add_argument('--audio_backbone_dir',
+                        default=os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/audio")))
+    parser.add_argument('--visual_backbone_dir',
+                        default=os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/visual")))
+    parser.add_argument('--csv_dir',
+                        default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/csv/multimodel-reduced")))
+    parser.add_argument('--media_dir',
+                        default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/data")))
     parser.add_argument('--batch_size',          type=int, default=32)
     parser.add_argument('--num_frames',          type=int, default=32)
     parser.add_argument('--device',              type=str, default='cuda')

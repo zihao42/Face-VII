@@ -126,12 +126,14 @@ def evaluate_combination(comb, data_dir,
 
 def main():
     import argparse
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
-    parser.add_argument("--video_weights_dir", default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual")
-    parser.add_argument("--audio_weights_dir", default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio")
+    parser.add_argument("--data_dir", default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/data")))
+    parser.add_argument("--video_weights_dir", default=os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/visual")))
+    parser.add_argument("--audio_weights_dir", default=os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/audio")))
     parser.add_argument("--classifier_weights_dir", required=True)
-    parser.add_argument("--csv_dir", default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel-reduced")
+    parser.add_argument("--csv_dir", default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/csv/multimodel-reduced")))
     parser.add_argument("--output_dir", required=True,
                         help="Directory to save plots and result logs")
     args = parser.parse_args()

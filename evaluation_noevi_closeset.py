@@ -108,13 +108,18 @@ def evaluate_single_combination_closeset(
 
 
 def main():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights_dir',        type=str, required=True,
-                        help='CE 模型权重目录')
-    parser.add_argument('--audio_backbone_dir',  default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio")
-    parser.add_argument('--visual_backbone_dir', default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual")
-    parser.add_argument('--csv_dir',             default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel-reduced")
-    parser.add_argument('--media_dir',           default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
+    parser.add_argument('--weights_dir', type=str, required=True,
+                        help='CE model weights dir')
+    parser.add_argument('--audio_backbone_dir',
+                        default=os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/audio")))
+    parser.add_argument('--visual_backbone_dir',
+                        default=os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/visual")))
+    parser.add_argument('--csv_dir',
+                        default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/csv/multimodel-reduced")))
+    parser.add_argument('--media_dir',
+                        default=os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/data")))
     parser.add_argument('--batch_size',          type=int, default=32)
     parser.add_argument('--num_frames',          type=int, default=32)
     parser.add_argument('--device',              type=str, default='cuda')
