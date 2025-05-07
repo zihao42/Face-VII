@@ -62,10 +62,10 @@ def predict_batch(vids, auds, models, threshold=0.5):
     B = vids.size(0)
     with torch.no_grad():
         # features
-        v_feats = extract_frame_features_from_backbone(vids.to(device), video_bb).mean(dim=1)
-        a_feats = extract_audio_features_from_backbone(auds.to(device), audio_bb, target_frames=v_feats.shape[1]).mean(dim=1)
+        v_feats = extract_frame_features_from_backbone(vids.to(device), video_bb)
+        a_feats = extract_audio_features_from_backbone(auds.to(device), audio_bb)
         # fusion
-        fused_feats = fusion([v_feats.unsqueeze(1), a_feats.unsqueeze(1)])
+        fused_feats = fusion([v_feats, a_feats])
         # evidential
         evidence = enn_head(fused_feats)
         alpha = evidence + 1.0

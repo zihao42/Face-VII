@@ -206,6 +206,7 @@ def main():
         for j in range(cm_vals.shape[1]):
             plt.text(j, i, f"{cm_vals[i, j]:.2f}",
                      ha="center", va="center",
+                     fontsize=8,
                      color="white" if cm_vals[i, j] > thresh else "black")
     plt.xticks(np.arange(len(full_labels)), full_labels, rotation=45)
     plt.yticks(np.arange(len(full_labels)), full_labels)

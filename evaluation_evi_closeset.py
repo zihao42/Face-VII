@@ -1,3 +1,26 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+evaluation_evi_closeset.py: Close-set evaluation for evidential multimodal models on RAVDESS.
+
+Outputs:
+  - Per-combination confusion CSV: combination-<id>_confusion_evi.csv
+  - Average confusion CSV: average_confusion_evi.csv
+  - Average confusion heatmap: average_confusion_evi.png
+  - Metrics summary CSV: metrics_summary_evi.csv
+
+Usage:
+  python evaluation_evi_closeset.py \
+    --weights_dir /path/to/model-evi \
+    --audio_backbone_dir /path/to/backbones/audio \
+    --visual_backbone_dir /path/to/backbones/visual \
+    --csv_dir /path/to/csvs \
+    --media_dir /path/to/RAVDESS/data \
+    --batch_size 32 \
+    --num_frames 32 \
+    --device cuda \
+    --output_dir /path/to/output
+"""
 import os
 import re
 import argparse
@@ -34,7 +57,7 @@ def evaluate_single_combination_evi(
     print(f"  Visual backbone: {visual_bb_path}")
     print(f"  CSV file:        {csv_path}")
 
-    # build label mapping train ∪ test_known
+    # 1) build label mapping train ∪ test_known
     raw_df   = pd.read_csv(csv_path)
     train_df = raw_df[raw_df.category == "train"]
     val_df   = raw_df[(raw_df.category == "test") & (raw_df.emo_label != 8)]
@@ -47,13 +70,14 @@ def evaluate_single_combination_evi(
     print("Label Map:", label_map)
     print("Unique Labels:", unique_lbls)
 
-    # prepare test samples, just use val_df here
+    # 2) prepare test samples
     samples = list(zip(
         val_df.audio_filename.values,
         val_df.video_filename.values,
         val_df.emo_label.values
     ))
 
+    # 3) DataLoader
     dataset = RAVDESSMultimodalDataset(
         samples,
         args.media_dir,
@@ -69,12 +93,12 @@ def evaluate_single_combination_evi(
         pin_memory=(args.device.startswith("cuda"))
     )
 
-    # load backbones
+    # 4) load backbones
     device = torch.device(args.device)
     backbone_v = load_timesformer_backbone(visual_bb_path, device)
     backbone_a = load_audio_backbone(audio_bb_path, device)
 
-    # load evi model
+    # 5) load EVI model
     raw_state = torch.load(clf_path, map_location=device)
     model = MultimodalTransformer(
         modality_num=2,
@@ -92,7 +116,7 @@ def evaluate_single_combination_evi(
     model.eval()
     enn_head.eval()
 
-    # inference & collect
+    # 6) inference & collect
     y_true_idx, y_pred_idx = [], []
     with torch.no_grad():
         for wavs, vids, lbls in tqdm(loader, desc=f"Comb {comb_id}", leave=False):
@@ -111,13 +135,13 @@ def evaluate_single_combination_evi(
     y_true_idx = np.array(y_true_idx, dtype=int)
     y_pred_idx = np.array(y_pred_idx, dtype=int)
 
-    # confusion matrix
+    # 7) confusion matrix
     cm = confusion_matrix(
         y_true_idx,
         y_pred_idx,
         labels=list(range(num_classes))
     )
-    # save CSV
+    # save per-combination CSV
     pd.DataFrame(cm, index=unique_lbls, columns=unique_lbls).to_csv(os.path.join(args.output_dir, f"combination-{comb_id}_confusion_evi.csv"),
               index_label='true')
     return cm, unique_lbls
@@ -127,10 +151,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights_dir',        type=str, required=True,
                         help='EVI model weights directory')
-    parser.add_argument('--audio_backbone_dir',  type=str, required=True)
-    parser.add_argument('--visual_backbone_dir', type=str, required=True)
-    parser.add_argument('--csv_dir',             type=str, required=True)
-    parser.add_argument('--media_dir',           type=str, required=True)
+    parser.add_argument('--audio_backbone_dir',  default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio")
+    parser.add_argument('--visual_backbone_dir', default="/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual")
+    parser.add_argument('--csv_dir',             default="/media/data1/ningtong/wzh/datasets/RAVDESS/csv/multimodel-reduced")
+    parser.add_argument('--media_dir',           default="/media/data1/ningtong/wzh/datasets/RAVDESS/data")
     parser.add_argument('--batch_size',          type=int, default=32)
     parser.add_argument('--num_frames',          type=int, default=32)
     parser.add_argument('--device',              type=str, default='cuda')
@@ -142,7 +166,7 @@ def main():
         print("CUDA not available, switching to CPU")
         args.device = 'cpu'
 
-    # iterate all evi checkpoints
+    # iterate all EVI checkpoints
     all_clfs = sorted(f for f in os.listdir(args.weights_dir) if f.endswith('.pth'))
     cms, metrics_list = [], []
     full_labels = list(range(8))
@@ -198,10 +222,26 @@ def main():
     # save average confusion
     df_avg = pd.DataFrame(sum(cms)/len(cms), index=full_labels, columns=full_labels)
     df_avg.to_csv(os.path.join(args.output_dir, "average_confusion_evi.csv"), index_label='label')
-    plt.figure(figsize=(6,6))
-    plt.imshow(df_avg.values, cmap='Blues', vmin=0, vmax=df_avg.values.max())
+    plt.figure()
+    plt.imshow(df_avg.values, cmap='Blues', vmin=0, vmax=df_avg.values.max(), interpolation='nearest')
     plt.title("Average Confusion Matrix (EVI)")
+    plt.xlabel("Predicted label")
+    plt.ylabel("True label")
     plt.colorbar()
+
+# ————— 在热力图上写数字 —————
+    cm_vals = df_avg.values
+    thresh = cm_vals.max() / 2.0
+    for i in range(cm_vals.shape[0]):
+        for j in range(cm_vals.shape[1]):
+            plt.text(
+                j, i,
+                f"{cm_vals[i, j]:.2f}",
+                ha="center", va="center",
+                color="white" if cm_vals[i, j] > thresh else "black",
+            )
+    plt.xticks(np.arange(len(full_labels)), full_labels, rotation=45)
+    plt.yticks(np.arange(len(full_labels)), full_labels)
     plt.tight_layout()
     plt.savefig(os.path.join(args.output_dir, "average_confusion_evi.png"))
     plt.close()
