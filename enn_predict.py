@@ -1,6 +1,5 @@
 import argparse
 import torch
-import torch.nn as nn
 import torchvision.transforms as transforms
 from data import COMBINATION_SPLITS, load_video_frames, load_audio_file
 from audio_feature_extract import load_audio_backbone, extract_audio_features_from_backbone

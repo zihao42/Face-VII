@@ -7,7 +7,7 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import classification_report, roc_auc_score, roc_curve
+from sklearn.metrics import roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
 
 from data import load_audio_file, load_video_frames

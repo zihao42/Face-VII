@@ -1,13 +1,10 @@
 import os
-import random
 import torch
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from torch import nn
 from torch.utils.data import Dataset, DataLoader, random_split
 from tqdm import tqdm
-import torchaudio
 
 # Import the pretrained wav2vec2 model from transformers
 from transformers import Wav2Vec2Model
