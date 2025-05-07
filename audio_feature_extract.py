@@ -6,7 +6,6 @@ from transformers import Wav2Vec2Config, Wav2Vec2Model
 def load_audio_backbone(weights: str, device: torch.device) -> Wav2Vec2Model:
     config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base-960h")
     backbone = Wav2Vec2Model(config)
-    # 安全地只加载权重
     state_dict = torch.load(weights, map_location=device, weights_only=True)
     backbone.load_state_dict(state_dict)
     backbone.to(device)
@@ -27,7 +26,7 @@ def extract_audio_features(
     weights_fname = f"openset_split_combination_{combination}_wav2vec_backbone.pth"
     weights_path = os.path.join(weights_dir, weights_fname)
     if not os.path.exists(weights_path):
-        raise FileNotFoundError(f"未找到权重文件: {weights_path}")
+        raise FileNotFoundError(f"Cannot find weights files: {weights_path}")
 
     backbone = load_audio_backbone(weights_path, device)
     audio_batch = audio_batch.to(device)
@@ -35,7 +34,6 @@ def extract_audio_features(
     hidden_states = outputs.last_hidden_state  # [B, seq_len, D]
     B, _, D = hidden_states.shape
 
-    # 池化到 32 帧（与视频对齐）
     x = hidden_states.transpose(1, 2)          # [B, D, seq_len]
     pooled = nn.functional.adaptive_avg_pool1d(x, 32)  # [B, D, 32]
     features = pooled.transpose(1, 2)          # [B, 32, D]

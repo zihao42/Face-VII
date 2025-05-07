@@ -27,7 +27,7 @@ def extract_frame_features(
     fname = f"openset_split_combination_{combination}_timesformer_backbone.pth"
     wpath = os.path.join(weights_dir, fname)
     if not os.path.exists(wpath):
-        raise FileNotFoundError(f"未找到权重文件: {wpath}")
+        raise FileNotFoundError(f"Cannot find weights files: {wpath}")
 
     backbone = load_timesformer_backbone(wpath, device)
     video_batch = video_batch.to(device)
@@ -39,7 +39,7 @@ def extract_frame_features(
     Lw = L - 1
     T = video_batch.shape[1]
     if Lw % T != 0:
-        raise ValueError("token 与帧数不匹配")
+        raise ValueError("token does not match with frame rates")
     P = Lw // T
 
     tokens = last_hidden[:, 1:, :].reshape(B, T, P, D)
@@ -60,7 +60,7 @@ def extract_frame_features_from_backbone(
     Lw = L - 1
     T = video_batch.shape[1]
     if Lw % T != 0:
-        raise ValueError("token 与帧数不匹配")
+        raise ValueError("token does not match with frame rates")
     P = Lw // T
 
     tokens = last_hidden[:, 1:, :].reshape(B, T, P, D)

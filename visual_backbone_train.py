@@ -1,7 +1,6 @@
 import os
 import cv2
 import torch
-import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -162,9 +161,10 @@ def train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, de
     return model, metrics
 
 def main():
-    csv_dir = "/media/data1/ningtong/wzh/datasets/RAVDESS/csv/"
-    video_dir = "/media/data1/ningtong/wzh/datasets/RAVDESS"
-    backbone_save_dir = "/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/visual"
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    csv_dir = os.path.join(BASE_DIR, "../../datasets/RAVDESS/csv")
+    video_dir = os.path.join(BASE_DIR, "../../datasets/RAVDESS")
+    backbone_save_dir = os.path.join(BASE_DIR, "weights/backbones/visual")
     os.makedirs(backbone_save_dir, exist_ok=True)
 
     batch_size = 4

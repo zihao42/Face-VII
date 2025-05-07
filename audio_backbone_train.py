@@ -154,9 +154,10 @@ def train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, de
 
 # ===================== Main Function =====================
 def main():
-    csv_dir = "/media/data1/ningtong/wzh/datasets/RAVDESS/csv/"
-    audio_dir = "/media/data1/ningtong/wzh/datasets/RAVDESS"
-    backbone_save_dir = "/media/data1/ningtong/wzh/projects/Face-VII/weights/backbones/audio"
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    csv_dir = os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS/csv"))
+    audio_dir = os.path.abspath(os.path.join(BASE_DIR, "../../datasets/RAVDESS"))
+    backbone_save_dir = os.path.abspath(os.path.join(BASE_DIR, "weights/backbones/audio"))
     os.makedirs(backbone_save_dir, exist_ok=True)
 
     batch_size = 64
